@@ -1,0 +1,13 @@
+[package]
+name = "kako"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Sandboxed data-transform runner: runs SQL (DuckDB) and Python transforms as isolated jobs from pluggable job sources, with receipts."
+keywords = ["etl", "duckdb", "sandbox", "data", "transform"]
+categories = ["command-line-utilities", "database"]
+homepage = "https://github.com/Sannrox/kako"
+
+[dependencies]
