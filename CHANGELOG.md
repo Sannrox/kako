@@ -26,3 +26,6 @@ uses [Semantic Versioning](https://semver.org/).
   remains DuckDB.
 - Mizuchi receipts include a `lineage` object (plan, reads after prune,
   writes). DuckDB receipts omit the field.
+- Jobs, receipts, and quota keys carry `tenant_id` and `namespace`. Receipt
+  JSON is `receipt_version` 2. The local CLI fills `local` / `default`
+  unless `--require-identity` is set.

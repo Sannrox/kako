@@ -9,7 +9,7 @@ use crate::digest::{hash_bytes, hash_file};
 use crate::engine;
 use crate::sandbox;
 use crate::stage::Scratch;
-use crate::{Engine, Failure, Job, JobSource, Output, Receipt};
+use crate::{Engine, Failure, Job, JobSource, Output, QuotaKey, Receipt};
 
 /// How the runner finds a worker binary and where it puts scratch trees.
 #[derive(Debug, Clone)]
@@ -75,6 +75,7 @@ pub struct CompletedRun {
 /// Stage, sandbox, hash. The scratch tree lives in the returned value so
 /// `JobSource::complete` can copy outputs before cleanup.
 pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Failure> {
+    QuotaKey::from_job(job).map_err(Failure::Runner)?;
     match job.engine {
         crate::Engine::DuckDbSql | crate::Engine::Mizuchi => {}
         crate::Engine::Python => {
@@ -150,6 +151,8 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
         outputs: output_digests,
         started_at,
         duration: started.elapsed(),
+        tenant_id: job.tenant_id.clone(),
+        namespace: job.namespace.clone(),
         lineage,
     };
     Ok(CompletedRun {
@@ -232,6 +235,8 @@ mod tests {
             }],
             outputs: vec!["out.csv".into()],
             wall_clock: Duration::from_secs(5),
+            tenant_id: "local".into(),
+            namespace: "default".into(),
         };
         let mut source = Fake {
             jobs: vec![job],
@@ -256,6 +261,40 @@ mod tests {
     }
 
     #[test]
+    fn missing_tenant_is_a_runner_failure() {
+        let parent = tempfile::tempdir().unwrap();
+        let job = Job {
+            id: "no-tenant".into(),
+            engine: Engine::DuckDbSql,
+            code: "SELECT 1".into(),
+            inputs: vec![],
+            outputs: vec!["out.csv".into()],
+            wall_clock: Duration::from_secs(5),
+            tenant_id: String::new(),
+            namespace: "default".into(),
+        };
+        let mut source = Fake {
+            jobs: vec![job],
+            fails: Vec::new(),
+        };
+        let config = RunnerConfig {
+            worker: PathBuf::from("/bin/false"),
+            scratch_parent: parent.path().to_path_buf(),
+        };
+        let finishes = run_source(&mut source, &config).unwrap();
+        assert!(
+            matches!(
+                &finishes[0],
+                JobFinish::Failed {
+                    failure: Failure::Runner(msg),
+                    ..
+                } if msg.contains("tenant_id")
+            ),
+            "{finishes:?}"
+        );
+    }
+
+    #[test]
     fn python_engine_is_a_runner_failure() {
         let parent = tempfile::tempdir().unwrap();
         let job = Job {
@@ -265,6 +304,8 @@ mod tests {
             inputs: vec![],
             outputs: vec!["out.csv".into()],
             wall_clock: Duration::from_secs(5),
+            tenant_id: "local".into(),
+            namespace: "default".into(),
         };
         let mut source = Fake {
             jobs: vec![job],

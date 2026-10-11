@@ -52,6 +52,38 @@ pub struct Job {
     pub outputs: Vec<String>,
     /// Hard wall-clock timeout for the sandboxed child.
     pub wall_clock: Duration,
+    /// Tenant that owns this job. Required; the local source fills a default.
+    pub tenant_id: String,
+    /// Namespace inside the tenant. Required; the local source fills a default.
+    pub namespace: String,
+}
+
+/// Key for quotas, claims, and receipts: `(tenant_id, namespace)`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct QuotaKey {
+    pub tenant_id: String,
+    pub namespace: String,
+}
+
+impl QuotaKey {
+    pub fn new(tenant_id: impl Into<String>, namespace: impl Into<String>) -> Result<Self, String> {
+        let tenant_id = tenant_id.into();
+        let namespace = namespace.into();
+        if tenant_id.is_empty() {
+            return Err("tenant_id is required".into());
+        }
+        if namespace.is_empty() {
+            return Err("namespace is required".into());
+        }
+        Ok(Self {
+            tenant_id,
+            namespace,
+        })
+    }
+
+    pub fn from_job(job: &Job) -> Result<Self, String> {
+        Self::new(&job.tenant_id, &job.namespace)
+    }
 }
 
 /// One produced output file.
@@ -74,6 +106,8 @@ pub struct Receipt {
     pub outputs: Vec<(String, Digest)>,
     pub started_at: SystemTime,
     pub duration: Duration,
+    pub tenant_id: String,
+    pub namespace: String,
     /// Engine-reported reads, writes, and plan. Present for mizuchi; omitted
     /// from DuckDB receipts so v1 JSON for the default engine stays the same.
     pub lineage: Option<Lineage>,
@@ -183,5 +217,14 @@ mod tests {
     #[test]
     fn empty_source_yields_no_job() {
         assert_eq!(Empty.next_job().unwrap(), None);
+    }
+
+    #[test]
+    fn quota_key_is_tenant_and_namespace() {
+        let key = QuotaKey::new("t", "ns").unwrap();
+        assert_eq!(key.tenant_id, "t");
+        assert_eq!(key.namespace, "ns");
+        assert!(QuotaKey::new("", "ns").unwrap_err().contains("tenant_id"));
+        assert!(QuotaKey::new("t", "").unwrap_err().contains("namespace"));
     }
 }
