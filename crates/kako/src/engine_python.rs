@@ -421,7 +421,7 @@ def transform(inputs):
         match kekkai::health(&settings) {
             kekkai::Health::Ok(_) => {}
             other => {
-                eprintln!("skip: rlimit backend unavailable: {other}");
+                eprintln!("skip: rlimit backend unavailable: {other:?}");
                 return;
             }
         }
