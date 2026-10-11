@@ -1,6 +1,7 @@
 //! In-process DuckDB execution used by the sandboxed worker child.
 
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -54,15 +55,24 @@ pub fn execute_in_scratch(scratch: &Path) -> Result<String, String> {
     result
 }
 
+fn engine_step(step: &str) {
+    let mut err = io::stderr();
+    let _ = writeln!(err, "kako-engine: {step}");
+    let _ = err.flush();
+}
+
 fn execute_in_current_dir(scratch: &Path) -> Result<String, String> {
     let raw =
         fs::read_to_string("manifest.json").map_err(|error| format!("read manifest: {error}"))?;
     let manifest: Manifest =
         serde_json::from_str(&raw).map_err(|error| format!("parse manifest: {error}"))?;
-    let tmp = scratch.join("tmp");
-    let db_path = scratch.join("engine.duckdb");
+    let scratch_abs = scratch
+        .canonicalize()
+        .map_err(|error| format!("canonicalize scratch: {error}"))?;
+    let tmp = scratch_abs.join("tmp");
+    let db_path = scratch_abs.join("engine.duckdb");
     let tmp_s = tmp.to_string_lossy().into_owned();
-    let home_s = scratch.to_string_lossy().into_owned();
+    let home_s = scratch_abs.to_string_lossy().into_owned();
     let config = Config::default()
         .threads(1)
         .map_err(|error| format!("duckdb config threads: {error}"))?
@@ -80,28 +90,39 @@ fn execute_in_current_dir(scratch: &Path) -> Result<String, String> {
         .map_err(|error| format!("duckdb config file cache: {error}"))?
         .with("allocator_background_threads", "false")
         .map_err(|error| format!("duckdb config allocator: {error}"))?;
+    engine_step("open");
     let conn = Connection::open_with_flags(&db_path, config)
         .map_err(|error| format!("open duckdb: {error}"))?;
-    conn.execute_batch(
+    engine_step("settings");
+    // Open with external access so construction can read host identity files
+    // the kernel sandbox grants. Then allow only the scratch tree and lock
+    // the configuration so user SQL cannot follow those grants.
+    let scratch_sql = sql_string(&home_s);
+    conn.execute_batch(&format!(
         "SET enable_progress_bar=false;\n\
          SET autoload_known_extensions=false;\n\
          SET autoinstall_known_extensions=false;\n\
          SET enable_external_file_cache=false;\n\
          SET allocator_background_threads=false;\n\
-         SET disabled_filesystems='HTTPFileSystem';",
-    )
+         SET allowed_directories = ['{scratch_sql}', 'inputs', 'outputs', 'tmp'];\n\
+         SET enable_external_access = false;\n\
+         SET lock_configuration = true;"
+    ))
     .map_err(|error| format!("duckdb settings: {error}"))?;
+    engine_step("views");
     for input in &manifest.inputs {
         let view = quote_ident(&input.name);
-        let abs = scratch.join(&input.relative);
-        let path = abs.to_string_lossy().replace('\'', "''");
+        let abs = scratch_abs.join(&input.relative);
+        let path = sql_string(&abs.to_string_lossy());
         let from = scan_sql(&path);
         let sql = format!("CREATE OR REPLACE VIEW {view} AS SELECT * FROM {from}");
         conn.execute_batch(&sql)
             .map_err(|error| format!("create view `{}`: {error}", input.name))?;
     }
+    engine_step("sql");
     conn.execute_batch(&manifest.sql)
         .map_err(|error| format!("sql: {error}"))?;
+    engine_step("version");
     let version: String = conn
         .query_row("SELECT version()", [], |row| row.get(0))
         .map_err(|error| format!("duckdb version: {error}"))?;
@@ -111,6 +132,10 @@ fn execute_in_current_dir(scratch: &Path) -> Result<String, String> {
 
 fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+fn sql_string(value: &str) -> String {
+    value.replace('\'', "''")
 }
 
 fn scan_sql(relative: &str) -> String {
@@ -193,5 +218,36 @@ mod tests {
             "expected aggregate 25, got {csv}"
         );
         assert!(csv.contains('7'), "expected aggregate 7, got {csv}");
+    }
+
+    #[test]
+    fn user_sql_cannot_read_outside_scratch() {
+        let parent = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        let input = src.path().join("in.csv");
+        fs::write(&input, "x\n1\n").unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        fs::write(outside.path(), "secret,val\nleak,1\n").unwrap();
+        let scratch = Scratch::create(parent.path(), "confine").unwrap();
+        let staged = scratch
+            .stage_inputs(&[Input {
+                name: "in".into(),
+                path: input,
+            }])
+            .unwrap();
+        let leak = sql_string(&outside.path().to_string_lossy());
+        let sql = format!(
+            "COPY (SELECT * FROM read_csv_auto('{leak}')) TO 'outputs/leak.csv' (HEADER, DELIMITER ',');"
+        );
+        write_manifest(scratch.path(), &sql, &staged).unwrap();
+        let error = execute_in_scratch(scratch.path()).unwrap_err();
+        assert!(
+            error.contains("sql:") && error.contains("Cannot access"),
+            "{error}"
+        );
+        assert!(
+            !scratch.outputs_dir().join("leak.csv").exists(),
+            "outside read must not produce an output"
+        );
     }
 }

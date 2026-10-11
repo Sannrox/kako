@@ -108,10 +108,13 @@ fn extra_readable_roots(worker: Option<&Path>) -> Vec<PathBuf> {
     if let Some(worker) = worker {
         push_executable(&mut roots, worker);
     }
-    for path in [Path::new("/proc/cpuinfo"), Path::new("/proc/meminfo")] {
-        if path.exists() {
-            push_existing(&mut roots, path);
-        }
+    // The engine child reads `/proc/self/cgroup`. That path is the child's
+    // pid, which the parent cannot name when it builds the ruleset, so the
+    // `/proc` directory is granted as a whole. Do not grant `/sys`.
+    // User SQL cannot follow this grant: the engine allow-lists only the
+    // scratch directory and then disables DuckDB external access.
+    if Path::new("/proc").is_dir() {
+        push_existing(&mut roots, Path::new("/proc"));
     }
     for path in [
         Path::new("/sys/devices/system/cpu"),
@@ -270,12 +273,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn extra_readable_roots_do_not_grant_proc_or_sys() {
+    fn extra_readable_roots_do_not_grant_sys() {
         let roots = extra_readable_roots(None);
         for root in &roots {
-            assert_ne!(root.as_path(), Path::new("/proc"), "{roots:?}");
             assert_ne!(root.as_path(), Path::new("/sys"), "{roots:?}");
         }
+    }
+
+    #[test]
+    fn extra_readable_roots_include_proc_when_present() {
+        let proc = Path::new("/proc");
+        if !proc.is_dir() {
+            return;
+        }
+        let roots = extra_readable_roots(None);
+        let granted = roots.iter().any(|root| {
+            root == proc
+                || fs_canonicalize(proc)
+                    .map(|canon| root == &canon)
+                    .unwrap_or(false)
+        });
+        assert!(granted, "expected {proc:?} in {roots:?}");
     }
 
     #[test]
