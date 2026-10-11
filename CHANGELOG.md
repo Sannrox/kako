@@ -44,3 +44,7 @@ uses [Semantic Versioning](https://semver.org/).
   Operators keep prior images under `KAKO_PYTHON_IMAGES`; an unknown pin
   fails closed. Upgrading the default image does not change a pinned
   transform ([ADR 0006](docs/decisions/0006-python-package-policy.md)).
+- Single-node ceiling: kako stays one process per run. Scale-out is
+  partition fan-out at the job source. `scripts/single-node-ceiling.sh`
+  measures DuckDB and Polars join+agg duration
+  ([ADR 0007](docs/decisions/0007-single-node-execution.md)).
