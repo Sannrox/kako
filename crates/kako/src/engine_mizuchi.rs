@@ -420,7 +420,7 @@ mod tests {
                 },
             ])
             .unwrap();
-        write_manifest(scratch.path(), Engine::Mizuchi, &sql, &staged).unwrap();
+        write_manifest(scratch.path(), Engine::Mizuchi, &sql, &staged, &[]).unwrap();
         let version = execute_in_scratch(scratch.path()).unwrap();
         assert!(version.starts_with("mizuchi "), "{version}");
         let csv = fs::read_to_string(scratch.outputs_dir().join("totals.csv")).unwrap();
@@ -456,7 +456,7 @@ mod tests {
                 },
             ])
             .unwrap();
-        write_manifest(scratch2.path(), Engine::Mizuchi, &sql, &staged2).unwrap();
+        write_manifest(scratch2.path(), Engine::Mizuchi, &sql, &staged2, &[]).unwrap();
         execute_in_scratch(scratch2.path()).unwrap();
         let lineage2: crate::Lineage = serde_json::from_str(
             &fs::read_to_string(scratch2.path().join("lineage.json")).unwrap(),
@@ -483,6 +483,7 @@ mod tests {
             Engine::Mizuchi,
             "COPY (SELECT * FROM in) TO 'outputs/one.csv' (HEADER, DELIMITER ',');",
             &staged,
+            &[],
         )
         .unwrap();
         let error = execute_in_scratch(scratch.path()).unwrap_err();
@@ -627,6 +628,7 @@ mod tests {
             Engine::Mizuchi,
             "COPY (SELECT id FROM sales WHERE year = 2020) TO 'outputs/ids.csv' (HEADER, DELIMITER ',');",
             &[("sales".into(), PathBuf::from("inputs/sales"))],
+            &[],
         )
         .unwrap();
         execute_in_scratch(scratch.path()).unwrap();

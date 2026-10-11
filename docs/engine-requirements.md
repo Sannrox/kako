@@ -26,7 +26,9 @@ contract between kako and the engine. They are not required of the current
 file-backed SQL path. A candidate that only speaks frames must still land
 files under `outputs/` so the job source sees the same artifacts.
 
-User code is data. The runner does not import it.
+User code is data. The runner does not import it. The Python engine loads
+user source from a scratch file through a wrapper
+([ADR 0005](decisions/0005-python-runtime-image.md)).
 
 ## Correctness bar
 
@@ -93,6 +95,8 @@ produce them even if v1 does not serialize them yet.
    candidate on the same host. Keep both JSON reports with the PR.
    A mizuchi job uses `"engine": "mizuchi"` and
    `scripts/engine-bar/join-mizuchi.json` on the same fixture inputs.
+   A Python job uses `"engine": "python"` and
+   `scripts/engine-bar/join_polars.py` / `join_pandas.py`.
 3. A maintainer accepts the comparison against this page.
 4. Switching the default is a new ADR once correctness, performance at
    scale factor 1, resource, lineage, and operational bars all pass.

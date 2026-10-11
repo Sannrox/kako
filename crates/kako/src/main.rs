@@ -11,11 +11,11 @@ USAGE:
     kako doctor
     kako [--version | --help]
 
-`kako run` reads a job file (SQL, named input files, expected outputs),
-runs DuckDB in a kekkai sandbox, and writes outputs plus receipt.json to
-the output directory (default: ./out). Jobs carry tenant_id and namespace
+`kako run` reads a job file (SQL or Python, named input files, expected
+outputs), runs it in a kekkai sandbox, and writes outputs plus receipt.json
+to the output directory (default: ./out). Jobs carry tenant_id and namespace
 (default local/default). --require-identity refuses a job file that omits
-either field.";
+either field. Python jobs set \"engine\": \"python\" and \"code\".";
 
 fn main() {
     let mut args = std::env::args().skip(1);

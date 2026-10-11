@@ -36,3 +36,7 @@ uses [Semantic Versioning](https://semver.org/).
 - `FairSource`: round-robin by quota key so one owner's flood does not
   block another owner's first run beyond a few slots. The local CLI stays
   one-shot.
+- Opt-in Python engine: `"engine": "python"` with `transform(inputs)` over
+  staged frames. Packages come from `runtime/python/requirements.txt`;
+  receipts record `runtime_image` as the lockfile digest. Default stays
+  DuckDB ([ADR 0005](docs/decisions/0005-python-runtime-image.md)).

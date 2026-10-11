@@ -7,6 +7,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::digest::{hash_bytes, hash_file};
 use crate::engine;
+use crate::engine_python;
 use crate::sandbox;
 use crate::stage::Scratch;
 use crate::{Engine, Failure, Job, JobSource, Output, QuotaKey, Receipt};
@@ -76,12 +77,12 @@ pub struct CompletedRun {
 /// `JobSource::complete` can copy outputs before cleanup.
 pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Failure> {
     QuotaKey::from_job(job).map_err(Failure::Runner)?;
-    match job.engine {
-        crate::Engine::DuckDbSql | crate::Engine::Mizuchi => {}
+    let python = match job.engine {
+        crate::Engine::DuckDbSql | crate::Engine::Mizuchi => None,
         crate::Engine::Python => {
-            return Err(Failure::Runner("python engine is not implemented".into()));
+            Some(engine_python::resolve_interpreter().map_err(Failure::Runner)?)
         }
-    }
+    };
     let started_at = SystemTime::now();
     let started = Instant::now();
     let scratch = Scratch::create(&config.scratch_parent, &job.id).map_err(Failure::Runner)?;
@@ -95,13 +96,22 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
         ));
     }
     let code_digest = hash_bytes(job.code.as_bytes());
-    engine::write_manifest(scratch.path(), job.engine, &job.code, &staged)
+    engine::write_manifest(scratch.path(), job.engine, &job.code, &staged, &job.outputs)
         .map_err(Failure::Runner)?;
 
     let backend = sandbox::select_backend()?;
     let cpu_time_secs = Some(cpu_limit_secs(job)?);
     let mut command = Command::new(&config.worker);
     command.arg("--internal-execute").arg(scratch.path());
+    let mut extra_readable = if let Some(ref interpreter) = python {
+        command.env("KAKO_PYTHON", interpreter);
+        command.env("PYTHONNOUSERSITE", "1");
+        command.env("PYTHONDONTWRITEBYTECODE", "1");
+        engine_python::python_readable_roots(interpreter).map_err(Failure::Runner)?
+    } else {
+        Vec::new()
+    };
+    extra_readable.push(config.worker.clone());
     let (status, stdout, stderr, usage) = sandbox::run_sandboxed(
         command,
         scratch.path(),
@@ -109,7 +119,7 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
         job.wall_clock,
         cpu_time_secs,
         job.memory_bytes,
-        &config.worker,
+        &extra_readable,
     )?;
     if let Some(failure) = classify_worker(status, &stdout, &stderr, usage.oom_killed) {
         return Err(failure);
@@ -150,6 +160,7 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
         cpu_usec: usage.cpu_usec,
         memory_peak_bytes: usage.memory_peak_bytes,
         lineage,
+        runtime_image: python.map(|_| engine_python::runtime_image_id()),
     };
     Ok(CompletedRun {
         outputs,
@@ -353,42 +364,6 @@ mod tests {
     }
 
     #[test]
-    fn python_engine_is_a_runner_failure() {
-        let parent = tempfile::tempdir().unwrap();
-        let job = Job {
-            id: "py".into(),
-            engine: Engine::Python,
-            code: "print(1)".into(),
-            inputs: vec![],
-            outputs: vec!["out.csv".into()],
-            wall_clock: Duration::from_secs(5),
-            cpu_time: None,
-            memory_bytes: None,
-            tenant_id: "local".into(),
-            namespace: "default".into(),
-        };
-        let mut source = Fake {
-            jobs: vec![job],
-            fails: Vec::new(),
-        };
-        let config = RunnerConfig {
-            worker: PathBuf::from("/bin/false"),
-            scratch_parent: parent.path().to_path_buf(),
-        };
-        let finishes = run_source(&mut source, &config).unwrap();
-        assert!(
-            matches!(
-                &finishes[0],
-                JobFinish::Failed {
-                    failure: Failure::Runner(msg),
-                    ..
-                } if msg.contains("python")
-            ),
-            "{finishes:?}"
-        );
-    }
-
-    #[test]
     fn duckdb_jobs_ignore_planted_lineage_file() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(
@@ -416,14 +391,17 @@ mod tests {
         }
     }
 
-    /// Job the run loop will start; Python fails inside `execute_job` before
-    /// the sandbox so the load test measures scheduling, not worker time.
+    /// Job the run loop will start; missing input fails inside `execute_job`
+    /// before the sandbox so the load test measures scheduling, not worker time.
     fn queued_job(id: &str, tenant: &str) -> Job {
         Job {
             id: id.into(),
-            engine: Engine::Python,
-            code: "print(1)".into(),
-            inputs: vec![],
+            engine: Engine::DuckDbSql,
+            code: "SELECT 1".into(),
+            inputs: vec![Input {
+                name: "gone".into(),
+                path: PathBuf::from("/nonexistent/kako-fair-missing.csv"),
+            }],
             outputs: vec!["out.csv".into()],
             wall_clock: Duration::from_secs(5),
             cpu_time: None,
@@ -528,7 +506,7 @@ mod tests {
         assert!(
             finishes.iter().all(|finish| matches!(
                 finish,
-                JobFinish::Failed { failure: Failure::Runner(msg), .. } if msg.contains("python")
+                JobFinish::Failed { failure: Failure::Runner(msg), .. } if msg.contains("gone")
             )),
             "{finishes:?}"
         );

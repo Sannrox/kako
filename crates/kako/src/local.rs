@@ -39,7 +39,8 @@ impl From<io::Error> for LocalError {
 struct JobFile {
     id: Option<String>,
     engine: Option<String>,
-    sql: String,
+    sql: Option<String>,
+    code: Option<String>,
     inputs: HashMap<String, String>,
     outputs: Vec<String>,
     timeout_ms: Option<u64>,
@@ -225,12 +226,6 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
         .map_err(|error| LocalError(format!("parse {}: {error}", path.display())))?;
     let (tenant_id, namespace) = resolve_identity(&parsed, identity)?;
     let base = path.parent().unwrap_or_else(|| Path::new("."));
-    let id = parsed.id.unwrap_or_else(|| {
-        path.file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("job")
-            .to_string()
-    });
     let engine = match parsed.engine.as_deref().unwrap_or("duckdb_sql") {
         "duckdb_sql" | "sql" => Engine::DuckDbSql,
         "mizuchi" => Engine::Mizuchi,
@@ -241,6 +236,13 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
             )));
         }
     };
+    let code = job_code(&parsed, engine)?;
+    let id = parsed.id.unwrap_or_else(|| {
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("job")
+            .to_string()
+    });
     if parsed.outputs.is_empty() {
         return Err(LocalError("job must name at least one output".into()));
     }
@@ -295,7 +297,7 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
     Ok(Job {
         id,
         engine,
-        code: parsed.sql,
+        code,
         inputs,
         outputs: parsed.outputs,
         wall_clock,
@@ -330,6 +332,20 @@ fn resolve_identity(
     let namespace = file_namespace.unwrap_or(identity.namespace.as_str());
     QuotaKey::new(tenant_id, namespace).map_err(LocalError)?;
     Ok((tenant_id.to_string(), namespace.to_string()))
+}
+
+fn job_code(parsed: &JobFile, engine: Engine) -> Result<String, LocalError> {
+    match engine {
+        Engine::Python => parsed
+            .code
+            .clone()
+            .or_else(|| parsed.sql.clone())
+            .ok_or_else(|| LocalError("python job must set `code`".into())),
+        Engine::DuckDbSql | Engine::Mizuchi => parsed
+            .sql
+            .clone()
+            .ok_or_else(|| LocalError("sql job must set `sql`".into())),
+    }
 }
 
 fn validate_name(name: &str) -> Result<(), LocalError> {
@@ -374,6 +390,44 @@ mod tests {
         let key = QuotaKey::from_job(&job).unwrap();
         assert_eq!(key.tenant_id, "local");
         assert_eq!(key.namespace, "default");
+    }
+
+    #[test]
+    fn load_job_reads_python_code() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.csv"), "a\n1\n").unwrap();
+        let job_path = dir.path().join("job.json");
+        fs::write(
+            &job_path,
+            r#"{
+              "engine": "python",
+              "code": "def transform(inputs):\n    return {\"out.csv\": inputs[\"in\"]}\n",
+              "inputs": {"in": "in.csv"},
+              "outputs": ["out.csv"]
+            }"#,
+        )
+        .unwrap();
+        let job = load_job(&job_path).unwrap();
+        assert_eq!(job.engine, Engine::Python);
+        assert!(job.code.contains("def transform"), "{}", job.code);
+    }
+
+    #[test]
+    fn load_job_rejects_python_without_code() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.csv"), "a\n1\n").unwrap();
+        let job_path = dir.path().join("job.json");
+        fs::write(
+            &job_path,
+            r#"{
+              "engine": "python",
+              "inputs": {"in": "in.csv"},
+              "outputs": ["out.csv"]
+            }"#,
+        )
+        .unwrap();
+        let err = load_job(&job_path).unwrap_err();
+        assert!(err.0.contains("code"), "{err}");
     }
 
     #[test]
@@ -535,6 +589,7 @@ mod tests {
             cpu_usec: None,
             memory_peak_bytes: None,
             lineage: None,
+            runtime_image: None,
         };
         let err = source.complete(&job, &outputs, &receipt).unwrap_err();
         assert!(err.0.contains("file name"), "{err}");
@@ -635,6 +690,7 @@ mod tests {
             cpu_usec: None,
             memory_peak_bytes: None,
             lineage: None,
+            runtime_image: None,
         };
         source.complete(&job, &outputs, &receipt).unwrap();
         let json = fs::read_to_string(out.join("receipt.json")).unwrap();

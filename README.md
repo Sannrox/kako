@@ -4,9 +4,11 @@ A sandboxed data-transform runner. kako takes a job (SQL or Python plus input
 datasets), runs it in an isolated, short-lived child process, and returns the
 outputs together with a receipt describing exactly what ran.
 
-> Status: SQL MVP. Local jobs run DuckDB in a [kekkai](https://github.com/Sannrox/kekkai)
-> sandbox and write outputs plus a receipt. Python and external job sources
-> are not implemented yet. See [ADR 0002](docs/decisions/0002-sandboxed-transform-runner.md).
+> Status: SQL MVP plus opt-in Python. Local jobs run DuckDB (default) or
+> Python in a [kekkai](https://github.com/Sannrox/kekkai) sandbox and write
+> outputs plus a receipt. External job sources are not implemented yet.
+> See [ADR 0002](docs/decisions/0002-sandboxed-transform-runner.md) and
+> [ADR 0005](docs/decisions/0005-python-runtime-image.md).
 
 ## How it works
 
@@ -80,8 +82,11 @@ the sandbox reports them.
 - **SQL via mizuchi** opt-in: set `"engine": "mizuchi"` on the job. Default
   jobs and tests stay on DuckDB. Mizuchi receipts add `lineage` (plan, reads,
   writes); DuckDB receipts stay the same.
-- **Python** (Polars, pandas) later. Packages are baked into the runtime
-  image; user code has no network access.
+- **Python** opt-in: set `"engine": "python"` and `"code"` with
+  `def transform(inputs)` returning output frames. Packages (Polars, pandas,
+  pyarrow, DuckDB) come from the hashed lockfile in `runtime/python/`; user
+  code has no network. Receipts record `runtime_image` as the lockfile
+  digest. Set `KAKO_PYTHON` when the interpreter is not on `PATH`.
 
 Adding or switching an engine is opt-in behind the bar in
 [docs/engine-requirements.md](docs/engine-requirements.md)
@@ -109,6 +114,7 @@ Every run produces a receipt with:
 - the digest of each input;
 - the digest of the code;
 - the engine and its version;
+- `runtime_image` for Python jobs (lockfile digest);
 - the digest of each output;
 - start time and duration.
 
