@@ -5,10 +5,12 @@ use std::path::{Path, PathBuf};
 
 use arrow::csv::WriterBuilder;
 use mizuchi::{
-    CancelToken, CsvReadOptions, Error, ParquetReadOptions, Session, SessionConfig, VERSION,
+    CancelToken, CsvReadOptions, Error, ParquetReadOptions, QueryReport, Session, SessionConfig,
+    VERSION,
 };
 
 use crate::engine::StagedInput;
+use crate::{Lineage, LineageRead, LineageWrite};
 
 /// Run staged SQL through mizuchi. Returns `mizuchi <version>`.
 pub(crate) fn execute(sql: &str, inputs: &[StagedInput], scratch: &Path) -> Result<String, String> {
@@ -70,7 +72,8 @@ fn execute_with(
             dest.display()
         ));
     }
-    let batches = session.execute_sql(&query).map_err(map_error)?;
+    let result = session.execute_sql_reported(&query).map_err(map_error)?;
+    let batches = result.batches;
     let schema = if let Some(first) = batches.first() {
         first.schema()
     } else {
@@ -81,6 +84,21 @@ fn execute_with(
             .clone()
     };
     write_csv(&dest_abs, &schema, &batches)?;
+    let mut lineage = lineage_from_report(&result.report, &scratch_abs);
+    let rows: u64 = batches.iter().map(|batch| batch.num_rows() as u64).sum();
+    let bytes = std::fs::metadata(&dest_abs)
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+    let rel = dest.to_string_lossy().replace('\\', "/");
+    lineage.writes.push(LineageWrite {
+        path: rel,
+        partitions: Vec::new(),
+        mode: "overwrite".into(),
+        rows,
+        bytes,
+        commit_id: format!("overwrite:{rows}:{bytes}:"),
+    });
+    write_lineage(scratch, &lineage)?;
     Ok(format!("mizuchi {VERSION}"))
 }
 
@@ -90,12 +108,14 @@ fn register_input(session: &mut Session, name: &str, path: &Path) -> Result<(), 
         .and_then(|ext| ext.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    match lower.as_str() {
-        "parquet" => session
+    if path.is_dir() || lower == "parquet" {
+        session
             .register_parquet(name, path, ParquetReadOptions::default())
-            .map_err(map_error),
-        "tsv" => Err("mizuchi adapter does not read TSV inputs; convert to CSV or parquet".into()),
-        _ => session
+            .map_err(map_error)
+    } else if lower == "tsv" {
+        Err("mizuchi adapter does not read TSV inputs; convert to CSV or parquet".into())
+    } else {
+        session
             .register_csv(
                 name,
                 path,
@@ -106,8 +126,59 @@ fn register_input(session: &mut Session, name: &str, path: &Path) -> Result<(), 
                     policy: mizuchi::BatchPolicy::default(),
                 },
             )
-            .map_err(map_error),
+            .map_err(map_error)
     }
+}
+
+fn relativize(scratch: &Path, path: &str) -> String {
+    let given = PathBuf::from(path);
+    if let Ok(rel) = given.strip_prefix(scratch) {
+        return rel.to_string_lossy().replace('\\', "/");
+    }
+    let scratch_c = scratch.canonicalize().ok();
+    let given_c = given.canonicalize().ok();
+    if let (Some(scratch_c), Some(given_c)) = (scratch_c, given_c)
+        && let Ok(rel) = given_c.strip_prefix(&scratch_c)
+    {
+        return rel.to_string_lossy().replace('\\', "/");
+    }
+    path.replace('\\', "/")
+}
+
+pub(crate) fn lineage_from_report(report: &QueryReport, scratch: &Path) -> Lineage {
+    Lineage {
+        plan: report.plan.clone(),
+        reads: report
+            .inputs
+            .iter()
+            .map(|scan| LineageRead {
+                dataset: scan.dataset.clone(),
+                path: scan.path.as_deref().map(|p| relativize(scratch, p)),
+                partitions: scan.partitions.clone(),
+                columns: scan.columns.clone(),
+            })
+            .collect(),
+        writes: report
+            .outputs
+            .iter()
+            .map(|write| LineageWrite {
+                path: relativize(scratch, &write.path),
+                partitions: write.partitions.clone(),
+                mode: write.mode.clone(),
+                rows: write.rows,
+                bytes: write.bytes,
+                commit_id: write.commit_id.clone(),
+            })
+            .collect(),
+    }
+}
+
+fn write_lineage(scratch: &Path, lineage: &Lineage) -> Result<(), String> {
+    let mut json = serde_json::to_string_pretty(lineage)
+        .map_err(|error| format!("serialize lineage: {error}"))?;
+    json.push('\n');
+    std::fs::write(scratch.join("lineage.json"), json)
+        .map_err(|error| format!("write lineage.json: {error}"))
 }
 
 fn map_error(error: Error) -> String {
@@ -361,6 +432,37 @@ mod tests {
             "expected aggregate 25, got {csv}"
         );
         assert!(csv.contains('7'), "expected aggregate 7, got {csv}");
+        let lineage: crate::Lineage =
+            serde_json::from_str(&fs::read_to_string(scratch.path().join("lineage.json")).unwrap())
+                .unwrap();
+        assert!(lineage.plan.contains("Logical Plan"), "{}", lineage.plan);
+        let datasets: Vec<_> = lineage.reads.iter().map(|r| r.dataset.as_str()).collect();
+        assert!(datasets.contains(&"customers"), "{datasets:?}");
+        assert!(datasets.contains(&"orders"), "{datasets:?}");
+        assert_eq!(lineage.writes.len(), 1);
+        assert_eq!(lineage.writes[0].path, "outputs/totals.csv");
+        assert_eq!(lineage.writes[0].mode, "overwrite");
+        let parent2 = tempfile::tempdir().unwrap();
+        let scratch2 = Scratch::create(parent2.path(), "mizuchi-join-2").unwrap();
+        let staged2 = scratch2
+            .stage_inputs(&[
+                Input {
+                    name: "customers".into(),
+                    path: bar.join("customers.csv"),
+                },
+                Input {
+                    name: "orders".into(),
+                    path: bar.join("orders.csv"),
+                },
+            ])
+            .unwrap();
+        write_manifest(scratch2.path(), Engine::Mizuchi, &sql, &staged2).unwrap();
+        execute_in_scratch(scratch2.path()).unwrap();
+        let lineage2: crate::Lineage = serde_json::from_str(
+            &fs::read_to_string(scratch2.path().join("lineage.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(lineage, lineage2);
     }
 
     #[test]
@@ -465,5 +567,125 @@ mod tests {
             error.contains("limit:") || error.contains("sql:"),
             "{error}"
         );
+    }
+
+    fn year_batch() -> mizuchi::Batch {
+        use std::sync::Arc;
+        let schema = Arc::new(mizuchi::Schema::new(vec![
+            mizuchi::Field::new("year", mizuchi::DataType::Int64, true),
+            mizuchi::Field::new("id", mizuchi::DataType::Int64, true),
+            mizuchi::Field::new("name", mizuchi::DataType::Utf8, true),
+        ]));
+        let batch = mizuchi::RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(arrow::array::Int64Array::from(vec![
+                    Some(2020),
+                    Some(2020),
+                    Some(2021),
+                ])),
+                Arc::new(arrow::array::Int64Array::from(vec![
+                    Some(1),
+                    Some(2),
+                    Some(3),
+                ])),
+                Arc::new(arrow::array::StringArray::from(vec![
+                    Some("a"),
+                    Some("b"),
+                    Some("c"),
+                ])),
+            ],
+        )
+        .unwrap();
+        mizuchi::Batch::from_arrow(batch).unwrap()
+    }
+
+    #[test]
+    fn partitioned_read_report_prunes() {
+        let parent = tempfile::tempdir().unwrap();
+        let scratch = Scratch::create(parent.path(), "mizuchi-prune").unwrap();
+        let dest = scratch.inputs_dir().join("sales");
+        let abs = scratch.path().canonicalize().unwrap();
+        let cfg = SessionConfig {
+            allowed_read_paths: vec![abs.clone()],
+            allowed_write_paths: vec![abs.clone()],
+            ..SessionConfig::default()
+        };
+        let session = Session::from_config(cfg).unwrap();
+        session
+            .write_parquet(
+                &dest,
+                &[year_batch()],
+                mizuchi::ParquetWriteOptions {
+                    partition_by: &[String::from("year")],
+                    mode: mizuchi::WriteMode::Overwrite,
+                },
+            )
+            .unwrap();
+        write_manifest(
+            scratch.path(),
+            Engine::Mizuchi,
+            "COPY (SELECT id FROM sales WHERE year = 2020) TO 'outputs/ids.csv' (HEADER, DELIMITER ',');",
+            &[("sales".into(), PathBuf::from("inputs/sales"))],
+        )
+        .unwrap();
+        execute_in_scratch(scratch.path()).unwrap();
+        let lineage: crate::Lineage =
+            serde_json::from_str(&fs::read_to_string(scratch.path().join("lineage.json")).unwrap())
+                .unwrap();
+        assert_eq!(lineage.reads.len(), 1);
+        assert_eq!(lineage.reads[0].dataset, "sales");
+        assert_eq!(lineage.reads[0].partitions, vec!["year=2020"]);
+        assert!(lineage.reads[0].columns.contains(&"id".to_string()));
+        let path = lineage.reads[0].path.as_deref().unwrap_or("");
+        assert!(
+            path.starts_with("inputs/"),
+            "path should be scratch-relative, got {path}"
+        );
+    }
+
+    #[test]
+    fn partitioned_write_reports_append_and_overwrite() {
+        let parent = tempfile::tempdir().unwrap();
+        let scratch = Scratch::create(parent.path(), "mizuchi-write").unwrap();
+        let abs = scratch.path().canonicalize().unwrap();
+        let dest = scratch.outputs_dir().join("sales");
+        let cfg = SessionConfig {
+            allowed_read_paths: vec![abs.clone()],
+            allowed_write_paths: vec![abs.clone()],
+            ..SessionConfig::default()
+        };
+        let session = Session::from_config(cfg).unwrap();
+        let batch = year_batch();
+        let opts_over = mizuchi::ParquetWriteOptions {
+            partition_by: &[String::from("year")],
+            mode: mizuchi::WriteMode::Overwrite,
+        };
+        let first = session
+            .write_parquet_reported(&dest, std::slice::from_ref(&batch), opts_over)
+            .unwrap();
+        let mapped = lineage_from_report(&first, &abs);
+        assert_eq!(mapped.writes.len(), 1);
+        assert_eq!(mapped.writes[0].mode, "overwrite");
+        assert_eq!(mapped.writes[0].rows, 3);
+        assert_eq!(mapped.writes[0].partitions, vec!["year=2020", "year=2021"]);
+        assert_eq!(mapped.writes[0].path, "outputs/sales");
+        let again = session
+            .write_parquet_reported(&dest, std::slice::from_ref(&batch), opts_over)
+            .unwrap();
+        assert_eq!(
+            lineage_from_report(&first, &abs),
+            lineage_from_report(&again, &abs)
+        );
+        let opts_append = mizuchi::ParquetWriteOptions {
+            partition_by: &[String::from("year")],
+            mode: mizuchi::WriteMode::Append,
+        };
+        let appended = session
+            .write_parquet_reported(&dest, &[batch], opts_append)
+            .unwrap();
+        let mapped = lineage_from_report(&appended, &abs);
+        assert_eq!(mapped.writes[0].mode, "append");
+        assert_eq!(mapped.writes[0].rows, 3);
     }
 }

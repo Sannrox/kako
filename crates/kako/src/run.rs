@@ -1,5 +1,6 @@
 //! Take one job, stage, sandbox, hash, report, clean up.
 
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
@@ -8,7 +9,7 @@ use crate::digest::{hash_bytes, hash_file};
 use crate::engine;
 use crate::sandbox;
 use crate::stage::Scratch;
-use crate::{Failure, Job, JobSource, Output, Receipt};
+use crate::{Engine, Failure, Job, JobSource, Output, Receipt};
 
 /// How the runner finds a worker binary and where it puts scratch trees.
 #[derive(Debug, Clone)]
@@ -140,6 +141,7 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
             digest,
         });
     }
+    let lineage = load_lineage(job.engine, scratch.path()).map_err(Failure::Runner)?;
     let receipt = Receipt {
         job_id: job.id.clone(),
         inputs: input_digests,
@@ -148,12 +150,27 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
         outputs: output_digests,
         started_at,
         duration: started.elapsed(),
+        lineage,
     };
     Ok(CompletedRun {
         outputs,
         receipt,
         _scratch: scratch,
     })
+}
+
+fn load_lineage(
+    engine: Engine,
+    scratch: &std::path::Path,
+) -> Result<Option<crate::Lineage>, String> {
+    if engine != Engine::Mizuchi {
+        return Ok(None);
+    }
+    let raw = fs::read_to_string(scratch.join("lineage.json"))
+        .map_err(|error| format!("read lineage.json: {error}"))?;
+    serde_json::from_str(&raw)
+        .map(Some)
+        .map_err(|error| format!("parse lineage.json: {error}"))
 }
 
 /// Default wall-clock timeout when a job file omits `timeout_ms`.
@@ -268,5 +285,18 @@ mod tests {
             ),
             "{finishes:?}"
         );
+    }
+
+    #[test]
+    fn duckdb_jobs_ignore_planted_lineage_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("lineage.json"),
+            r#"{"plan":"planted","reads":[],"writes":[]}"#,
+        )
+        .unwrap();
+        assert_eq!(load_lineage(Engine::DuckDbSql, dir.path()).unwrap(), None);
+        let lineage = load_lineage(Engine::Mizuchi, dir.path()).unwrap().unwrap();
+        assert_eq!(lineage.plan, "planted");
     }
 }

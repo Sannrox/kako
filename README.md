@@ -62,7 +62,8 @@ files and `receipt.json` into `--output` (default `./out`).
 
 - **SQL via DuckDB** first (default).
 - **SQL via mizuchi** opt-in: set `"engine": "mizuchi"` on the job. Default
-  jobs and tests stay on DuckDB.
+  jobs and tests stay on DuckDB. Mizuchi receipts add `lineage` (plan, reads,
+  writes); DuckDB receipts stay the same.
 - **Python** (Polars, pandas) later. Packages are baked into the runtime
   image; user code has no network access.
 

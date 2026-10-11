@@ -24,3 +24,5 @@ uses [Semantic Versioning](https://semver.org/).
   opt-in; `scripts/engine-bar/` is the named fixture baseline.
 - Opt-in mizuchi SQL engine: `"engine": "mizuchi"` on a job file. Default
   remains DuckDB.
+- Mizuchi receipts include a `lineage` object (plan, reads after prune,
+  writes). DuckDB receipts omit the field.

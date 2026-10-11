@@ -66,7 +66,9 @@ the host class (CPU count, memory) with the numbers.
 
 ## Lineage bar
 
-For an opt-in engine, `engine_version` is enough for receipt v1.
+For an opt-in engine, `engine_version` is enough for receipt v1. The
+mizuchi adapter also writes a `lineage` object (plan, reads after prune,
+writes). DuckDB receipts omit that field.
 
 To switch the default, the engine must also expose, for each run:
 
