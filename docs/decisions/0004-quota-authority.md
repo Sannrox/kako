@@ -33,8 +33,9 @@ exits.
 
 ## Consequences
 
-- Adapters that see the whole queue implement fairness; tests can do the
-  same with a fake source.
+- Adapters that see the whole queue implement fairness. `FairSource` is a
+  reference round-robin adapter; it is not installed in front of other
+  sources. Tests drive it through the run loop.
 - Per-run memory limits require a delegated cgroup on the host.
 - Aggregate owner caps never live in kako: the runner has no global view.
 

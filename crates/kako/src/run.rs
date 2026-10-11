@@ -416,64 +416,50 @@ mod tests {
         }
     }
 
-    /// Round-robin by quota key so one owner's flood cannot occupy every slot.
-    struct FairSource {
-        by_owner: std::collections::BTreeMap<crate::QuotaKey, std::collections::VecDeque<Job>>,
-        order: Vec<crate::QuotaKey>,
-        cursor: usize,
-        started: Vec<String>,
-    }
-
-    impl FairSource {
-        fn new(jobs: impl IntoIterator<Item = Job>) -> Self {
-            let mut source = Self {
-                by_owner: std::collections::BTreeMap::new(),
-                order: Vec::new(),
-                cursor: 0,
-                started: Vec::new(),
-            };
-            for job in jobs {
-                let key = crate::QuotaKey::from_job(&job).unwrap();
-                if !source.by_owner.contains_key(&key) {
-                    source.order.push(key.clone());
-                }
-                source.by_owner.entry(key).or_default().push_back(job);
-            }
-            source
+    /// Job the run loop will start; Python fails inside `execute_job` before
+    /// the sandbox so the load test measures scheduling, not worker time.
+    fn queued_job(id: &str, tenant: &str) -> Job {
+        Job {
+            id: id.into(),
+            engine: Engine::Python,
+            code: "print(1)".into(),
+            inputs: vec![],
+            outputs: vec!["out.csv".into()],
+            wall_clock: Duration::from_secs(5),
+            cpu_time: None,
+            memory_bytes: None,
+            tenant_id: tenant.into(),
+            namespace: "default".into(),
         }
     }
 
-    impl JobSource for FairSource {
-        type Error = FakeErr;
+    /// Records when `run_source` pulls each job, which is when that run starts.
+    struct RecordingSource {
+        inner: crate::fair::FairSource,
+        started: Vec<String>,
+        started_at: Vec<(String, Instant)>,
+    }
+
+    impl JobSource for RecordingSource {
+        type Error = std::convert::Infallible;
         fn next_job(&mut self) -> Result<Option<Job>, Self::Error> {
-            if self.order.is_empty() {
-                return Ok(None);
+            let job = self.inner.next_job()?;
+            if let Some(ref job) = job {
+                self.started.push(job.tenant_id.clone());
+                self.started_at.push((job.id.clone(), Instant::now()));
             }
-            for _ in 0..self.order.len() {
-                let i = self.cursor % self.order.len();
-                self.cursor += 1;
-                let key = &self.order[i];
-                if let Some(job) = self
-                    .by_owner
-                    .get_mut(key)
-                    .and_then(std::collections::VecDeque::pop_front)
-                {
-                    self.started.push(job.tenant_id.clone());
-                    return Ok(Some(job));
-                }
-            }
-            Ok(None)
+            Ok(job)
         }
         fn complete(
             &mut self,
-            _: &Job,
-            _: &[crate::Output],
-            _: &Receipt,
+            job: &Job,
+            outputs: &[crate::Output],
+            receipt: &Receipt,
         ) -> Result<(), Self::Error> {
-            Ok(())
+            self.inner.complete(job, outputs, receipt)
         }
-        fn fail(&mut self, _: &Job, _: &Failure) -> Result<(), Self::Error> {
-            Ok(())
+        fn fail(&mut self, job: &Job, failure: &Failure) -> Result<(), Self::Error> {
+            self.inner.fail(job, failure)
         }
     }
 
@@ -521,28 +507,63 @@ mod tests {
 
     #[test]
     fn fair_source_starts_a_second_owner_before_the_flood_drains() {
+        let flood = 20;
         let mut jobs = Vec::new();
-        for i in 0..20 {
-            jobs.push(sample_job(&format!("a{i}"), "alpha"));
+        for i in 0..flood {
+            jobs.push(queued_job(&format!("a{i}"), "alpha"));
         }
-        jobs.push(sample_job("b0", "beta"));
-        let mut source = FairSource::new(jobs);
-        let mut seen_beta = false;
-        for _ in 0..3 {
-            let job = source.next_job().unwrap().expect("queued job");
-            if job.tenant_id == "beta" {
-                seen_beta = true;
-                break;
-            }
-        }
+        jobs.push(queued_job("b0", "beta"));
+        let mut source = RecordingSource {
+            inner: crate::fair::FairSource::new(jobs).unwrap(),
+            started: Vec::new(),
+            started_at: Vec::new(),
+        };
+        let parent = tempfile::tempdir().unwrap();
+        let config = RunnerConfig {
+            worker: PathBuf::from("/bin/false"),
+            scratch_parent: parent.path().to_path_buf(),
+        };
+        let finishes = run_source(&mut source, &config).unwrap();
+        assert_eq!(finishes.len(), flood + 1);
         assert!(
-            seen_beta,
-            "beta must start within three pulls, started {:?}",
+            finishes.iter().all(|finish| matches!(
+                finish,
+                JobFinish::Failed { failure: Failure::Runner(msg), .. } if msg.contains("python")
+            )),
+            "{finishes:?}"
+        );
+
+        let started_ids: Vec<&str> = source
+            .started_at
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect();
+        let beta_slot = started_ids
+            .iter()
+            .position(|id| *id == "b0")
+            .expect("beta run started");
+        let last_alpha = format!("a{}", flood - 1);
+        let last_alpha_slot = started_ids
+            .iter()
+            .position(|id| *id == last_alpha)
+            .expect("flood still starts");
+        let beta_at = source.started_at[beta_slot].1;
+        let last_alpha_at = source.started_at[last_alpha_slot].1;
+        // Sequential `run_source` starts one job per slot. FIFO would place
+        // beta at slot `flood`; fair share starts it within the first few.
+        assert!(
+            beta_slot < 3,
+            "beta started at slot {beta_slot}, started {:?}",
             source.started
         );
         assert!(
-            source.started.iter().any(|t| t == "beta"),
-            "{:?}",
+            beta_slot < last_alpha_slot,
+            "beta must start before the flood drains; started {:?}",
+            source.started
+        );
+        assert!(
+            beta_at < last_alpha_at,
+            "beta delay must end before the flood's last start; started {:?}",
             source.started
         );
     }

@@ -94,7 +94,9 @@ hands out jobs and receives results. The source decides what runs and whether
 to retry; kako only executes.
 
 - **Local / CLI** (first-class): run a job described by a file on disk, write
-  outputs and the receipt to a directory.
+  outputs and the receipt to a directory. One-shot; it does not schedule.
+- **Fair share**: `FairSource` yields jobs round-robin by quota key so one
+  owner's flood does not occupy every slot. Other adapters may reuse it.
 - **Sekai** ([sekai-chisei](https://github.com/Sannrox/sekai-chisei)): claim
   transform runs from the Sekai control plane. One adapter among others.
 
