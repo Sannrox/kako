@@ -7,12 +7,15 @@ use serde::Serialize;
 
 use crate::{Lineage, Receipt};
 
-const RECEIPT_VERSION: u32 = 1;
+/// Schema 2 adds required `tenant_id` and `namespace` on every receipt.
+const RECEIPT_VERSION: u32 = 2;
 
 #[derive(Serialize)]
 struct FileReceipt<'a> {
     receipt_version: u32,
     job_id: &'a str,
+    tenant_id: &'a str,
+    namespace: &'a str,
     inputs: BTreeMap<&'a str, &'a str>,
     code: &'a str,
     engine_version: &'a str,
@@ -33,6 +36,8 @@ pub fn to_json(receipt: &Receipt) -> Result<String, String> {
     let body = FileReceipt {
         receipt_version: RECEIPT_VERSION,
         job_id: &receipt.job_id,
+        tenant_id: &receipt.tenant_id,
+        namespace: &receipt.namespace,
         inputs: receipt
             .inputs
             .iter()
@@ -65,6 +70,8 @@ mod tests {
     fn json_contains_required_fields() {
         let receipt = Receipt {
             job_id: "j1".into(),
+            tenant_id: "t".into(),
+            namespace: "ns".into(),
             inputs: vec![("in".into(), Digest("sha256:aa".into()))],
             code: Digest("sha256:bb".into()),
             engine_version: "duckdb 1.4.5".into(),
@@ -75,8 +82,10 @@ mod tests {
         };
         let json = to_json(&receipt).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["receipt_version"], 1);
+        assert_eq!(v["receipt_version"], 2);
         assert_eq!(v["job_id"], "j1");
+        assert_eq!(v["tenant_id"], "t");
+        assert_eq!(v["namespace"], "ns");
         assert_eq!(v["inputs"]["in"], "sha256:aa");
         assert_eq!(v["code"], "sha256:bb");
         assert_eq!(v["engine_version"], "duckdb 1.4.5");

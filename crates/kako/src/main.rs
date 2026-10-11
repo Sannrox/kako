@@ -7,13 +7,15 @@ const USAGE: &str = "\
 kako: sandboxed data-transform runner
 
 USAGE:
-    kako run <job.json> [--output <dir>]
+    kako run <job.json> [--output <dir>] [--tenant <id>] [--namespace <ns>] [--require-identity]
     kako doctor
     kako [--version | --help]
 
 `kako run` reads a job file (SQL, named input files, expected outputs),
 runs DuckDB in a kekkai sandbox, and writes outputs plus receipt.json to
-the output directory (default: ./out).";
+the output directory (default: ./out). Jobs carry tenant_id and namespace
+(default local/default). --require-identity refuses a job file that omits
+either field.";
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -62,6 +64,7 @@ fn main() {
 fn cmd_run(args: impl Iterator<Item = String>) -> Result<(), String> {
     let mut job_file: Option<PathBuf> = None;
     let mut output = PathBuf::from("out");
+    let mut identity = kako::local::LocalIdentity::default();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -71,6 +74,17 @@ fn cmd_run(args: impl Iterator<Item = String>) -> Result<(), String> {
                     .ok_or_else(|| "missing value for --output".to_string())?;
                 output = PathBuf::from(dir);
             }
+            "--tenant" => {
+                identity.tenant_id = args
+                    .next()
+                    .ok_or_else(|| "missing value for --tenant".to_string())?;
+            }
+            "--namespace" => {
+                identity.namespace = args
+                    .next()
+                    .ok_or_else(|| "missing value for --namespace".to_string())?;
+            }
+            "--require-identity" => identity.require_job_identity = true,
             s if s.starts_with('-') => return Err(format!("unknown flag `{s}`")),
             s => {
                 if job_file.is_some() {
@@ -81,7 +95,7 @@ fn cmd_run(args: impl Iterator<Item = String>) -> Result<(), String> {
         }
     }
     let job_file = job_file.ok_or_else(|| "missing job file".to_string())?;
-    let mut source = kako::local::LocalSource::from_job_file(&job_file, output)
+    let mut source = kako::local::LocalSource::from_job_file_with(&job_file, output, identity)
         .map_err(|error| error.to_string())?;
     let scratch_parent = std::env::temp_dir();
     let config = kako::run::RunnerConfig::for_current_exe(scratch_parent)

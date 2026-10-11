@@ -33,6 +33,8 @@ outputs together with a receipt describing exactly what ran.
 ```bash
 kako doctor
 kako run job.json --output ./out
+kako run job.json --tenant local --namespace default
+kako run job.json --require-identity
 ```
 
 `kako doctor` prints host capabilities. `kako run` uses kekkai `linux_native`
@@ -50,13 +52,20 @@ A job file is JSON:
     "orders": "orders.csv"
   },
   "outputs": ["totals.csv"],
-  "timeout_ms": 60000
+  "timeout_ms": 60000,
+  "tenant_id": "local",
+  "namespace": "default"
 }
 ```
 
 Input paths are relative to the job file. Each input is staged as a DuckDB
 view with that name. User SQL writes files under `outputs/`. kako copies those
 files and `receipt.json` into `--output` (default `./out`).
+
+Every job, receipt, and quota key carries `tenant_id` and `namespace`. The
+local CLI fills `local` / `default` when the job file omits them, or the
+values from `--tenant` / `--namespace`. `--require-identity` is the
+multi-tenant mode: both fields must be present on the job file.
 
 ## Engines
 
@@ -86,6 +95,7 @@ to retry; kako only executes.
 
 Every run produces a receipt with:
 
+- `tenant_id` and `namespace`;
 - the digest of each input;
 - the digest of the code;
 - the engine and its version;

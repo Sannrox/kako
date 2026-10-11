@@ -86,7 +86,7 @@ fn cli_join_twice_same_output_digest() {
         assert!(csv.contains("25") || csv.contains("25.0"), "{csv}");
         let receipt = fs::read_to_string(out.join("receipt.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&receipt).unwrap();
-        assert_eq!(v["receipt_version"], 1);
+        assert_eq!(v["receipt_version"], 2);
         assert_eq!(v["job_id"], "join-agg");
         assert!(
             v["inputs"]["customers"]
@@ -335,13 +335,38 @@ fn cli_copy_constant_row() {
     assert!(csv.contains('1'), "{csv}");
     let receipt = fs::read_to_string(out.join("receipt.json")).unwrap();
     let v: serde_json::Value = serde_json::from_str(&receipt).unwrap();
-    assert_eq!(v["receipt_version"], 1);
+    assert_eq!(v["receipt_version"], 2);
+    assert_eq!(v["tenant_id"], "local");
+    assert_eq!(v["namespace"], "default");
     assert!(
         v["outputs"]["one.csv"]
             .as_str()
             .unwrap()
             .starts_with("sha256:")
     );
+}
+
+#[test]
+fn cli_require_identity_refuses_missing_tenant() {
+    let dir = tempfile::tempdir().unwrap();
+    let job = join_job(dir.path());
+    let exe = worker();
+    for i in 1..=2 {
+        let output = Command::new(&exe)
+            .arg("run")
+            .arg(&job)
+            .arg("--output")
+            .arg(dir.path().join(format!("out{i}")))
+            .arg("--require-identity")
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "run {i} must refuse a job without tenant_id"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("tenant_id"), "run {i} stderr: {stderr}");
+    }
 }
 
 #[test]

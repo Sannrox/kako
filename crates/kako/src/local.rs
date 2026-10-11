@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use crate::receipt;
 use crate::run::DEFAULT_WALL_CLOCK;
-use crate::{Engine, Failure, Input, Job, JobSource, Output, Receipt};
+use crate::{Engine, Failure, Input, Job, JobSource, Output, QuotaKey, Receipt};
 
 #[derive(Debug)]
 pub struct LocalError(pub String);
@@ -43,6 +43,27 @@ struct JobFile {
     inputs: HashMap<String, String>,
     outputs: Vec<String>,
     timeout_ms: Option<u64>,
+    tenant_id: Option<String>,
+    namespace: Option<String>,
+}
+
+/// Identity the local source applies when a job file omits tenant/namespace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalIdentity {
+    pub tenant_id: String,
+    pub namespace: String,
+    /// When true, the job file must name both fields; defaults are not applied.
+    pub require_job_identity: bool,
+}
+
+impl Default for LocalIdentity {
+    fn default() -> Self {
+        Self {
+            tenant_id: "local".into(),
+            namespace: "default".into(),
+            require_job_identity: false,
+        }
+    }
 }
 
 /// One-shot source used by `kako run`.
@@ -53,7 +74,15 @@ pub struct LocalSource {
 
 impl LocalSource {
     pub fn from_job_file(job_file: &Path, output_dir: PathBuf) -> Result<Self, LocalError> {
-        let job = load_job(job_file)?;
+        Self::from_job_file_with(job_file, output_dir, LocalIdentity::default())
+    }
+
+    pub fn from_job_file_with(
+        job_file: &Path,
+        output_dir: PathBuf,
+        identity: LocalIdentity,
+    ) -> Result<Self, LocalError> {
+        let job = load_job_with(job_file, &identity)?;
         Ok(Self {
             job: Some(job),
             output_dir,
@@ -184,10 +213,15 @@ fn relative_file_name(path: &str) -> bool {
 
 /// Parse a job JSON file. Input paths are relative to the file's directory.
 pub fn load_job(path: &Path) -> Result<Job, LocalError> {
+    load_job_with(path, &LocalIdentity::default())
+}
+
+fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalError> {
     let raw = fs::read_to_string(path)
         .map_err(|error| LocalError(format!("read {}: {error}", path.display())))?;
     let parsed: JobFile = serde_json::from_str(&raw)
         .map_err(|error| LocalError(format!("parse {}: {error}", path.display())))?;
+    let (tenant_id, namespace) = resolve_identity(&parsed, identity)?;
     let base = path.parent().unwrap_or_else(|| Path::new("."));
     let id = parsed.id.unwrap_or_else(|| {
         path.file_stem()
@@ -255,7 +289,35 @@ pub fn load_job(path: &Path) -> Result<Job, LocalError> {
         inputs,
         outputs: parsed.outputs,
         wall_clock,
+        tenant_id,
+        namespace,
     })
+}
+
+/// Fill tenant/namespace from the job file, or from configured defaults.
+/// Multi-tenant sources (`require_job_identity`) refuse a missing field.
+fn resolve_identity(
+    parsed: &JobFile,
+    identity: &LocalIdentity,
+) -> Result<(String, String), LocalError> {
+    let file_tenant = parsed
+        .tenant_id
+        .as_deref()
+        .filter(|value| !value.is_empty());
+    let file_namespace = parsed
+        .namespace
+        .as_deref()
+        .filter(|value| !value.is_empty());
+    if identity.require_job_identity {
+        let tenant_id = file_tenant.ok_or_else(|| LocalError("tenant_id is required".into()))?;
+        let namespace = file_namespace.ok_or_else(|| LocalError("namespace is required".into()))?;
+        QuotaKey::new(tenant_id, namespace).map_err(LocalError)?;
+        return Ok((tenant_id.to_string(), namespace.to_string()));
+    }
+    let tenant_id = file_tenant.unwrap_or(identity.tenant_id.as_str());
+    let namespace = file_namespace.unwrap_or(identity.namespace.as_str());
+    QuotaKey::new(tenant_id, namespace).map_err(LocalError)?;
+    Ok((tenant_id.to_string(), namespace.to_string()))
 }
 
 fn validate_name(name: &str) -> Result<(), LocalError> {
@@ -293,6 +355,11 @@ mod tests {
         assert_eq!(job.inputs[0].name, "in");
         assert_eq!(job.inputs[0].path, dir.path().join("in.csv"));
         assert_eq!(job.wall_clock, Duration::from_millis(5000));
+        assert_eq!(job.tenant_id, "local");
+        assert_eq!(job.namespace, "default");
+        let key = QuotaKey::from_job(&job).unwrap();
+        assert_eq!(key.tenant_id, "local");
+        assert_eq!(key.namespace, "default");
     }
 
     #[test]
@@ -410,6 +477,8 @@ mod tests {
             inputs: vec![],
             outputs: vec!["nested/out.csv".into()],
             wall_clock: Duration::from_secs(1),
+            tenant_id: "local".into(),
+            namespace: "default".into(),
         };
         let outputs = vec![Output {
             name: "nested/out.csv".into(),
@@ -424,12 +493,113 @@ mod tests {
             outputs: vec![],
             started_at: SystemTime::UNIX_EPOCH,
             duration: Duration::from_millis(1),
+            tenant_id: "local".into(),
+            namespace: "default".into(),
             lineage: None,
         };
         let err = source.complete(&job, &outputs, &receipt).unwrap_err();
         assert!(err.0.contains("file name"), "{err}");
         assert!(!outside.join("out.csv").exists());
         assert!(!outside.join(".out.csv.kako-tmp").exists());
+    }
+
+    #[test]
+    fn load_job_reads_identity_from_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.csv"), "a\n1\n").unwrap();
+        let job_path = dir.path().join("job.json");
+        fs::write(
+            &job_path,
+            r#"{
+              "sql": "SELECT 1",
+              "inputs": {"in": "in.csv"},
+              "outputs": ["out.csv"],
+              "tenant_id": "t",
+              "namespace": "ns"
+            }"#,
+        )
+        .unwrap();
+        let job = load_job(&job_path).unwrap();
+        assert_eq!(job.tenant_id, "t");
+        assert_eq!(job.namespace, "ns");
+    }
+
+    #[test]
+    fn multi_tenant_source_refuses_missing_tenant() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.csv"), "a\n1\n").unwrap();
+        let job_path = dir.path().join("job.json");
+        fs::write(
+            &job_path,
+            r#"{
+              "sql": "SELECT 1",
+              "inputs": {"in": "in.csv"},
+              "outputs": ["out.csv"]
+            }"#,
+        )
+        .unwrap();
+        let identity = LocalIdentity {
+            tenant_id: "unused".into(),
+            namespace: "unused".into(),
+            require_job_identity: true,
+        };
+        let err = match LocalSource::from_job_file_with(&job_path, dir.path().join("out"), identity)
+        {
+            Err(error) => error,
+            Ok(_) => panic!("multi-tenant source accepted a job without tenant_id"),
+        };
+        assert!(err.0.contains("tenant_id"), "{err}");
+    }
+
+    #[test]
+    fn complete_receipt_echoes_job_identity() {
+        use crate::{Digest, Output, Receipt};
+        use std::time::{Duration, SystemTime};
+
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.csv"), "a\n1\n").unwrap();
+        let job_path = dir.path().join("job.json");
+        fs::write(
+            &job_path,
+            r#"{
+              "sql": "SELECT 1",
+              "inputs": {"in": "in.csv"},
+              "outputs": ["out.csv"],
+              "tenant_id": "t",
+              "namespace": "ns"
+            }"#,
+        )
+        .unwrap();
+        let out = dir.path().join("out");
+        fs::create_dir_all(&out).unwrap();
+        let produced = dir.path().join("produced.csv");
+        fs::write(&produced, "data\n").unwrap();
+        let mut source = LocalSource::from_job_file(&job_path, out.clone()).unwrap();
+        let job = source.next_job().unwrap().unwrap();
+        assert_eq!(job.tenant_id, "t");
+        assert_eq!(job.namespace, "ns");
+        let outputs = vec![Output {
+            name: "out.csv".into(),
+            path: produced,
+            digest: Digest("sha256:x".into()),
+        }];
+        let receipt = Receipt {
+            job_id: job.id.clone(),
+            inputs: vec![],
+            code: Digest("sha256:y".into()),
+            engine_version: "duckdb test".into(),
+            outputs: vec![("out.csv".into(), Digest("sha256:x".into()))],
+            started_at: SystemTime::UNIX_EPOCH,
+            duration: Duration::from_millis(1),
+            tenant_id: job.tenant_id.clone(),
+            namespace: job.namespace.clone(),
+            lineage: None,
+        };
+        source.complete(&job, &outputs, &receipt).unwrap();
+        let json = fs::read_to_string(out.join("receipt.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["tenant_id"], job.tenant_id);
+        assert_eq!(v["namespace"], job.namespace);
     }
 
     #[test]
