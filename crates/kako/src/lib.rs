@@ -74,6 +74,39 @@ pub struct Receipt {
     pub outputs: Vec<(String, Digest)>,
     pub started_at: SystemTime,
     pub duration: Duration,
+    /// Engine-reported reads, writes, and plan. Present for mizuchi; omitted
+    /// from DuckDB receipts so v1 JSON for the default engine stays the same.
+    pub lineage: Option<Lineage>,
+}
+
+/// Stable record of what one run read and wrote, for receipts.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Lineage {
+    /// Executed plan text from the engine.
+    pub plan: String,
+    pub reads: Vec<LineageRead>,
+    pub writes: Vec<LineageWrite>,
+}
+
+/// One input scan after projection and partition prune.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LineageRead {
+    pub dataset: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    pub partitions: Vec<String>,
+    pub columns: Vec<String>,
+}
+
+/// One output write after the adapter (or engine) committed files.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LineageWrite {
+    pub path: String,
+    pub partitions: Vec<String>,
+    pub mode: String,
+    pub rows: u64,
+    pub bytes: u64,
+    pub commit_id: String,
 }
 
 /// Why a job did not produce outputs.

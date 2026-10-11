@@ -151,6 +151,8 @@ fn cli_mizuchi_join() {
             .starts_with("mizuchi "),
         "{receipt}"
     );
+    assert!(v["lineage"]["plan"].as_str().is_some(), "{receipt}");
+    assert!(v["lineage"]["reads"].as_array().is_some(), "{receipt}");
 }
 
 #[test]

@@ -424,6 +424,7 @@ mod tests {
             outputs: vec![],
             started_at: SystemTime::UNIX_EPOCH,
             duration: Duration::from_millis(1),
+            lineage: None,
         };
         let err = source.complete(&job, &outputs, &receipt).unwrap_err();
         assert!(err.0.contains("file name"), "{err}");
