@@ -1,0 +1,11 @@
+{
+  "id": "join-agg",
+  "engine": "mizuchi",
+  "sql": "COPY (\n  SELECT id AS customer_id, name, sum(amount) AS total\n  FROM customers\n  JOIN orders ON id = customer_id\n  GROUP BY id, name\n  ORDER BY id\n) TO 'outputs/totals.csv' (HEADER, DELIMITER ',');",
+  "inputs": {
+    "customers": "customers.csv",
+    "orders": "orders.csv"
+  },
+  "outputs": ["totals.csv"],
+  "timeout_ms": 30000
+}

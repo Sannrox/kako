@@ -30,7 +30,7 @@ fn main() {
                 Ok(version) => println!("{version}"),
                 Err(error) => {
                     eprintln!("{error}");
-                    process::exit(1);
+                    process::exit(if error.starts_with("limit:") { 3 } else { 1 });
                 }
             }
         }

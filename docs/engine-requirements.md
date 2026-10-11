@@ -89,6 +89,8 @@ produce them even if v1 does not serialize them yet.
 1. Add the engine opt-in. Default tests stay green without it.
 2. Run `bash scripts/engine-bar/run.sh` against current default and the
    candidate on the same host. Keep both JSON reports with the PR.
+   A mizuchi job uses `"engine": "mizuchi"` and
+   `scripts/engine-bar/join-mizuchi.json` on the same fixture inputs.
 3. A maintainer accepts the comparison against this page.
 4. Switching the default is a new ADR once correctness, performance at
    scale factor 1, resource, lineage, and operational bars all pass.

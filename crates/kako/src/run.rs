@@ -74,8 +74,11 @@ pub struct CompletedRun {
 /// Stage, sandbox, hash. The scratch tree lives in the returned value so
 /// `JobSource::complete` can copy outputs before cleanup.
 pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Failure> {
-    if !matches!(job.engine, crate::Engine::DuckDbSql) {
-        return Err(Failure::Runner("python engine is not implemented".into()));
+    match job.engine {
+        crate::Engine::DuckDbSql | crate::Engine::Mizuchi => {}
+        crate::Engine::Python => {
+            return Err(Failure::Runner("python engine is not implemented".into()));
+        }
     }
     let started_at = SystemTime::now();
     let started = Instant::now();
@@ -90,7 +93,8 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
         ));
     }
     let code_digest = hash_bytes(job.code.as_bytes());
-    engine::write_manifest(scratch.path(), &job.code, &staged).map_err(Failure::Runner)?;
+    engine::write_manifest(scratch.path(), job.engine, &job.code, &staged)
+        .map_err(Failure::Runner)?;
 
     let backend = sandbox::select_backend()?;
     // CPU ceiling sits above the wall clock so the hard timeout wins.
@@ -108,7 +112,11 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
     if !status.success() {
         let err = String::from_utf8_lossy(&stderr);
         let out = String::from_utf8_lossy(&stdout);
-        return Err(Failure::Job(format!("worker exited {status}: {err}{out}")));
+        let body = format!("worker exited {status}: {err}{out}");
+        if status.code() == Some(3) || err.contains("limit:") || out.contains("limit:") {
+            return Err(Failure::Limit(body));
+        }
+        return Err(Failure::Job(body));
     }
     let engine_version = String::from_utf8_lossy(&stdout).trim().to_string();
     if engine_version.is_empty() {

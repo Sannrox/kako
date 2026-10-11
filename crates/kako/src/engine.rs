@@ -12,23 +12,32 @@ static CWD_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Deserialize)]
 struct Manifest {
+    #[serde(default)]
+    engine: Option<String>,
     sql: String,
     inputs: Vec<StagedInput>,
 }
 
 #[derive(Deserialize)]
-struct StagedInput {
-    name: String,
-    relative: String,
+pub(crate) struct StagedInput {
+    pub(crate) name: String,
+    pub(crate) relative: String,
 }
 
 /// Write the worker manifest the child will read.
 pub fn write_manifest(
     scratch: &Path,
+    engine: crate::Engine,
     sql: &str,
     inputs: &[(String, PathBuf)],
 ) -> Result<(), String> {
+    let engine = match engine {
+        crate::Engine::DuckDbSql => "duckdb_sql",
+        crate::Engine::Mizuchi => "mizuchi",
+        crate::Engine::Python => "python",
+    };
     let body = serde_json::json!({
+        "engine": engine,
         "sql": sql,
         "inputs": inputs.iter().map(|(name, relative)| {
             serde_json::json!({ "name": name, "relative": relative.display().to_string() })
@@ -66,6 +75,13 @@ fn execute_in_current_dir(scratch: &Path) -> Result<String, String> {
         fs::read_to_string("manifest.json").map_err(|error| format!("read manifest: {error}"))?;
     let manifest: Manifest =
         serde_json::from_str(&raw).map_err(|error| format!("parse manifest: {error}"))?;
+    match manifest.engine.as_deref().unwrap_or("duckdb_sql") {
+        "duckdb_sql" | "sql" => {}
+        "mizuchi" => {
+            return crate::engine_mizuchi::execute(&manifest.sql, &manifest.inputs, scratch);
+        }
+        other => return Err(format!("unknown engine `{other}`")),
+    }
     let scratch_abs = scratch
         .canonicalize()
         .map_err(|error| format!("canonicalize scratch: {error}"))?;
@@ -170,7 +186,7 @@ mod tests {
             }])
             .unwrap();
         let sql = "COPY (SELECT 1 AS x) TO 'outputs/one.csv' (HEADER, DELIMITER ',');";
-        write_manifest(scratch.path(), sql, &staged).unwrap();
+        write_manifest(scratch.path(), crate::Engine::DuckDbSql, sql, &staged).unwrap();
         let version = execute_in_scratch(scratch.path()).unwrap();
         assert!(version.starts_with("duckdb "), "{version}");
         let csv = fs::read_to_string(scratch.outputs_dir().join("one.csv")).unwrap();
@@ -206,7 +222,7 @@ mod tests {
   GROUP BY c.id, c.name
   ORDER BY c.id
 ) TO 'outputs/totals.csv' (HEADER, DELIMITER ',');";
-        write_manifest(scratch.path(), sql, &staged).unwrap();
+        write_manifest(scratch.path(), crate::Engine::DuckDbSql, sql, &staged).unwrap();
         let version = execute_in_scratch(scratch.path()).unwrap();
         assert!(version.starts_with("duckdb "), "{version}");
         let csv = fs::read_to_string(scratch.outputs_dir().join("totals.csv")).unwrap();
@@ -246,7 +262,7 @@ mod tests {
                 },
             ])
             .unwrap();
-        write_manifest(scratch.path(), &sql, &staged).unwrap();
+        write_manifest(scratch.path(), crate::Engine::DuckDbSql, &sql, &staged).unwrap();
         let version = execute_in_scratch(scratch.path()).unwrap();
         assert!(version.starts_with("duckdb "), "{version}");
         let csv = fs::read_to_string(scratch.outputs_dir().join("totals.csv")).unwrap();
@@ -279,7 +295,7 @@ mod tests {
         let sql = format!(
             "COPY (SELECT * FROM read_csv_auto('{leak}')) TO 'outputs/leak.csv' (HEADER, DELIMITER ',');"
         );
-        write_manifest(scratch.path(), &sql, &staged).unwrap();
+        write_manifest(scratch.path(), crate::Engine::DuckDbSql, &sql, &staged).unwrap();
         let error = execute_in_scratch(scratch.path()).unwrap_err();
         assert!(
             error.contains("sql:") && error.contains("Cannot access"),

@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime};
 
 pub mod digest;
 pub mod engine;
+mod engine_mizuchi;
 pub mod local;
 pub mod receipt;
 pub mod run;
@@ -23,8 +24,10 @@ pub struct Digest(pub String);
 /// The engine that executes a job's code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Engine {
-    /// SQL executed by DuckDB.
+    /// SQL executed by DuckDB. Default.
     DuckDbSql,
+    /// SQL executed by the opt-in mizuchi engine.
+    Mizuchi,
     /// Python (Polars, pandas) executed in a sandboxed interpreter. Planned.
     Python,
 }
