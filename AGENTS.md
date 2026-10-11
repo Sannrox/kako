@@ -54,7 +54,8 @@ bash scripts/validate-workflow-skills.sh
 - `cargo fmt --all` formats before review.
 - `cargo clippy ... -D warnings` is required for ship-level local gates.
 - `scripts/validate-workflow-skills.sh` clones or updates agent-kit and checks
-  that the skill stubs, vendored scripts, `.agents/project.md` and this file
+  that the skill stubs, vendored scripts and this file (including
+  `## Agent skill profile`)
   match it.
 
 There is no Makefile yet. When one is added, its targets become the source of
@@ -78,14 +79,56 @@ skill; read the installed skill under `~/.agents/agent-kit/` (or
 `$AGENT_KIT_HOME`). Run `bash scripts/validate-workflow-skills.sh` to clone or
 update it.
 
-- Repository-specific facts the shared Skills need (boundaries, shared
-  surfaces, verification matrix, release audit) live in `.agents/project.md`.
-  Edit that file, not the stubs.
+- Repository-specific facts the shared Skills need come from this file: the
+  ownership, structure, parallel-lane and testing sections, plus
+  `## Agent skill profile` below for anything they do not already say. Edit
+  this file, not the stubs.
 - Never edit stubs or vendored `scripts/gh-verified-push.sh` and
   `scripts/validate-workflow-skills.sh` here; change them upstream in
   agent-kit, then run `bash scripts/validate-workflow-skills.sh --render` here
   when CI reports drift.
 - Repository-only Skills live next to the stubs as full folders and stay local.
+
+## Agent skill profile
+
+Facts the shared agent-kit skills read that the sections above do not already
+state.
+
+Feature: a new observable operator or integration outcome.
+
+### Compatibility and failure obligations
+
+Adapter and kekkai version pins; partial runs (a crash after output is written
+but before it is reported, an adapter losing its claim mid-run); retries stay
+owned by the job source; scratch and process cleanup; runtime image contents.
+
+### Additional impact boundaries
+
+- the `JobSource` contract and each adapter's own guarantees (for example a
+  claim fence, where outputs and the receipt land together or not at all);
+- the receipt format: input digests, code digest, engine version, output
+  digests, timings;
+- engines: DuckDB for SQL; Python (Polars, pandas) only as user code inside the
+  sandbox, with packages from the runtime image;
+- configuration, CLI, logs and metrics, and packaging.
+
+### Verification matrix
+
+Rows beyond `## Testing Guidelines`:
+
+| Surface | Required evidence |
+| --- | --- |
+| job source, adapters, receipts | fake job source covers success, job failure, limit hits, and source errors; receipts complete and deterministic |
+| dependency pins (kekkai, adapter clients) | `Cargo.lock` diff reviewed; pinned tag exists upstream; upstream release notes read |
+| runtime image / Python packages | image builds; package set matches the documented policy |
+
+### Release audit
+
+- pinned kekkai and adapter client versions, and their release notes;
+- job source adapter compatibility and receipt format changes;
+- configuration additions, removals, and defaults;
+- runtime image contents and the Python package set;
+- packaging, rollback, and upgrade actions.
 
 ## Agent delivery closeout (required)
 
