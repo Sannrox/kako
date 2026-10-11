@@ -17,6 +17,8 @@ pub mod local;
 pub mod receipt;
 pub mod run;
 pub mod sandbox;
+#[cfg(test)]
+mod single_node_ceiling;
 pub mod stage;
 
 /// A content digest, written as `<algorithm>:<hex>` (for example SHA-256).

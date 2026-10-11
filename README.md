@@ -129,7 +129,9 @@ A receipt is enough to check what produced an output and to rerun it.
 
 - Scheduling, triggers, or a dependency graph between transforms. That is the
   job source's or an orchestrator's job.
-- Being a distributed engine. Single-node execution first.
+- Being a distributed engine. Single-node execution first; larger
+  datasets are split by the job source
+  ([ADR 0007](docs/decisions/0007-single-node-execution.md)).
 - Interactive authoring or notebooks.
 - Network access for user code.
 
@@ -140,6 +142,7 @@ cargo build
 cargo test
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
+KAKO_CEILING_CUSTOMERS=2000,20000,100000 bash scripts/single-node-ceiling.sh
 ```
 
 The toolchain is pinned in `rust-toolchain.toml`.
