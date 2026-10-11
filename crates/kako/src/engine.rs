@@ -47,23 +47,33 @@ pub fn execute_in_scratch(scratch: &Path) -> Result<String, String> {
     let previous = std::env::current_dir().ok();
     std::env::set_current_dir(scratch)
         .map_err(|error| format!("chdir {}: {error}", scratch.display()))?;
-    let result = execute_in_current_dir();
+    let result = execute_in_current_dir(scratch);
     if let Some(previous) = previous {
         let _ = std::env::set_current_dir(previous);
     }
     result
 }
 
-fn execute_in_current_dir() -> Result<String, String> {
+fn execute_in_current_dir(scratch: &Path) -> Result<String, String> {
     let raw =
         fs::read_to_string("manifest.json").map_err(|error| format!("read manifest: {error}"))?;
     let manifest: Manifest =
         serde_json::from_str(&raw).map_err(|error| format!("parse manifest: {error}"))?;
     let conn = Connection::open_in_memory().map_err(|error| format!("open duckdb: {error}"))?;
+    let tmp = scratch.join("tmp");
+    let tmp = tmp.to_string_lossy().replace('\'', "''");
+    conn.execute_batch(&format!(
+        "PRAGMA threads=1;\n\
+         SET autoload_known_extensions=false;\n\
+         SET autoinstall_known_extensions=false;\n\
+         SET temp_directory='{tmp}';"
+    ))
+    .map_err(|error| format!("duckdb sandbox settings: {error}"))?;
     for input in &manifest.inputs {
         let view = quote_ident(&input.name);
-        let rel = input.relative.replace('\'', "''");
-        let from = scan_sql(&rel);
+        let abs = scratch.join(&input.relative);
+        let path = abs.to_string_lossy().replace('\'', "''");
+        let from = scan_sql(&path);
         let sql = format!("CREATE OR REPLACE VIEW {view} AS SELECT * FROM {from}");
         conn.execute_batch(&sql)
             .map_err(|error| format!("create view `{}`: {error}", input.name))?;

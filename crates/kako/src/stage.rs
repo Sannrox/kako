@@ -31,8 +31,9 @@ impl Scratch {
         fs::create_dir_all(parent)
             .map_err(|error| format!("create scratch parent {}: {error}", parent.display()))?;
         let path = allocate_scratch_dir(parent, &safe)?;
-        if let Err(error) =
-            fs::create_dir(path.join("inputs")).and_then(|_| fs::create_dir(path.join("outputs")))
+        if let Err(error) = fs::create_dir(path.join("inputs"))
+            .and_then(|_| fs::create_dir(path.join("outputs")))
+            .and_then(|_| fs::create_dir(path.join("tmp")))
         {
             let _ = fs::remove_dir_all(&path);
             return Err(format!("create scratch {}: {error}", path.display()));
@@ -172,6 +173,7 @@ mod tests {
             let scratch = Scratch::create(parent.path(), "t1").unwrap();
             scratch_path = scratch.path().to_path_buf();
             assert!(scratch_path.is_dir());
+            assert!(scratch.path().join("tmp").is_dir());
             let staged = scratch
                 .stage_inputs(&[Input {
                     name: "orders".into(),
