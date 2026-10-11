@@ -4,7 +4,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use duckdb::Connection;
+use duckdb::{Config, Connection};
 use serde::Deserialize;
 
 static CWD_LOCK: Mutex<()> = Mutex::new(());
@@ -59,16 +59,17 @@ fn execute_in_current_dir(scratch: &Path) -> Result<String, String> {
         fs::read_to_string("manifest.json").map_err(|error| format!("read manifest: {error}"))?;
     let manifest: Manifest =
         serde_json::from_str(&raw).map_err(|error| format!("parse manifest: {error}"))?;
-    let conn = Connection::open_in_memory().map_err(|error| format!("open duckdb: {error}"))?;
     let tmp = scratch.join("tmp");
-    let tmp = tmp.to_string_lossy().replace('\'', "''");
-    conn.execute_batch(&format!(
-        "PRAGMA threads=1;\n\
-         SET autoload_known_extensions=false;\n\
-         SET autoinstall_known_extensions=false;\n\
-         SET temp_directory='{tmp}';"
-    ))
-    .map_err(|error| format!("duckdb sandbox settings: {error}"))?;
+    let db_path = scratch.join("engine.duckdb");
+    let config = Config::default()
+        .threads(1)
+        .map_err(|error| format!("duckdb config threads: {error}"))?
+        .enable_autoload_extension(false)
+        .map_err(|error| format!("duckdb config autoload: {error}"))?
+        .with("temp_directory", tmp.to_string_lossy().as_ref())
+        .map_err(|error| format!("duckdb config temp: {error}"))?;
+    let conn = Connection::open_with_flags(&db_path, config)
+        .map_err(|error| format!("open duckdb: {error}"))?;
     for input in &manifest.inputs {
         let view = quote_ident(&input.name);
         let abs = scratch.join(&input.relative);
