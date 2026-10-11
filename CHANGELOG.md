@@ -33,3 +33,6 @@ uses [Semantic Versioning](https://semver.org/).
   owns quotas and fair share ([ADR 0004](docs/decisions/0004-quota-authority.md));
   kako enforces the limits it is handed. Receipts include `cpu_usec` and
   `memory_peak_bytes` when the sandbox reports them.
+- `FairSource`: round-robin by quota key so one owner's flood does not
+  block another owner's first run beyond a few slots. The local CLI stays
+  one-shot.

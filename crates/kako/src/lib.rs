@@ -11,6 +11,7 @@ use std::time::{Duration, SystemTime};
 pub mod digest;
 pub mod engine;
 mod engine_mizuchi;
+pub mod fair;
 pub mod local;
 pub mod receipt;
 pub mod run;
