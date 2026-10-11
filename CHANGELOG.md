@@ -19,3 +19,6 @@ uses [Semantic Versioning](https://semver.org/).
 - Skeleton runner binary and core types: `JobSource`, `Job`, `Output`,
   `Receipt`, `Failure`.
 - ADR 0002: sandboxed transform runner with pluggable job sources.
+- Engine requirements bar ([ADR 0003](docs/decisions/0003-engine-opt-in-bar.md),
+  [docs/engine-requirements.md](docs/engine-requirements.md)): new engines are
+  opt-in; `scripts/engine-bar/` is the named fixture baseline.

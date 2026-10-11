@@ -64,6 +64,10 @@ files and `receipt.json` into `--output` (default `./out`).
 - **Python** (Polars, pandas) later. Packages are baked into the runtime
   image; user code has no network access.
 
+Adding or switching an engine is opt-in behind the bar in
+[docs/engine-requirements.md](docs/engine-requirements.md)
+([ADR 0003](docs/decisions/0003-engine-opt-in-bar.md)).
+
 ## Job sources
 
 A job source is a small trait (`JobSource` in `crates/kako/src/lib.rs`): it

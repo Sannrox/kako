@@ -1,0 +1,10 @@
+{
+  "id": "join-agg",
+  "sql": "COPY (\n  SELECT c.id AS customer_id, c.name, sum(o.amount) AS total\n  FROM customers c\n  JOIN orders o ON o.customer_id = c.id\n  GROUP BY c.id, c.name\n  ORDER BY c.id\n) TO 'outputs/totals.csv' (HEADER, DELIMITER ',');",
+  "inputs": {
+    "customers": "customers.csv",
+    "orders": "orders.csv"
+  },
+  "outputs": ["totals.csv"],
+  "timeout_ms": 30000
+}

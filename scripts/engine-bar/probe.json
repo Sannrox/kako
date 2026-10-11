@@ -1,0 +1,9 @@
+{
+  "id": "probe",
+  "sql": "COPY (SELECT 1 AS x) TO 'outputs/one.csv' (HEADER, DELIMITER ',');",
+  "inputs": {
+    "in": "in.csv"
+  },
+  "outputs": ["one.csv"],
+  "timeout_ms": 15000
+}
