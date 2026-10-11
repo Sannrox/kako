@@ -49,7 +49,9 @@ Python is opt-in.
 - Reproducing a Python run needs the lockfile (or an image built from it)
   in addition to the job bytes and input digests.
 - Hosts without a matching interpreter fail closed before the sandbox spawn.
-- Per-transform package sets and guest isolation stay later Issues.
+- Package policy (job pin, catalog, who publishes) is
+  [ADR 0006](0006-python-package-policy.md). Guest isolation stays a
+  later Issue.
 
 ## Alternatives considered
 

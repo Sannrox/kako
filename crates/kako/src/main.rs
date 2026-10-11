@@ -15,7 +15,7 @@ USAGE:
 outputs), runs it in a kekkai sandbox, and writes outputs plus receipt.json
 to the output directory (default: ./out). Jobs carry tenant_id and namespace
 (default local/default). --require-identity refuses a job file that omits
-either field. Python jobs set \"engine\": \"python\" and \"code\".";
+either field. Python jobs set \"engine\": \"python\" and \"code\", and may pin \"runtime_image\".";
 
 fn main() {
     let mut args = std::env::args().skip(1);

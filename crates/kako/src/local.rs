@@ -48,6 +48,7 @@ struct JobFile {
     memory_bytes: Option<u64>,
     tenant_id: Option<String>,
     namespace: Option<String>,
+    runtime_image: Option<String>,
 }
 
 /// Identity the local source applies when a job file omits tenant/namespace.
@@ -294,6 +295,15 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
     if parsed.memory_bytes == Some(0) {
         return Err(LocalError("memory_bytes must be greater than zero".into()));
     }
+    let runtime_image = match parsed.runtime_image {
+        Some(_) if engine != Engine::Python => {
+            return Err(LocalError(
+                "runtime_image is only valid for python jobs".into(),
+            ));
+        }
+        Some(id) => Some(crate::engine_python::validate_runtime_image_id(&id)?),
+        None => None,
+    };
     Ok(Job {
         id,
         engine,
@@ -305,6 +315,7 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
         memory_bytes: parsed.memory_bytes,
         tenant_id,
         namespace,
+        runtime_image,
     })
 }
 
@@ -410,6 +421,42 @@ mod tests {
         let job = load_job(&job_path).unwrap();
         assert_eq!(job.engine, Engine::Python);
         assert!(job.code.contains("def transform"), "{}", job.code);
+        assert_eq!(job.runtime_image, None);
+    }
+
+    #[test]
+    fn load_job_reads_python_runtime_image_pin() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.csv"), "a\n1\n").unwrap();
+        let job_path = dir.path().join("job.json");
+        let pin = format!("python-lockfile:sha256:{}", "ab".repeat(32));
+        let body = serde_json::json!({
+            "engine": "python",
+            "code": "def transform(inputs):\n    return {\"out.csv\": inputs[\"in\"]}\n",
+            "inputs": {"in": "in.csv"},
+            "outputs": ["out.csv"],
+            "runtime_image": pin,
+        });
+        fs::write(&job_path, body.to_string()).unwrap();
+        let job = load_job(&job_path).unwrap();
+        assert_eq!(job.runtime_image.as_deref(), Some(pin.as_str()));
+    }
+
+    #[test]
+    fn load_job_rejects_runtime_image_on_sql() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.csv"), "a\n1\n").unwrap();
+        let job_path = dir.path().join("job.json");
+        let pin = format!("python-lockfile:sha256:{}", "ab".repeat(32));
+        let body = serde_json::json!({
+            "sql": "SELECT 1",
+            "inputs": {"in": "in.csv"},
+            "outputs": ["out.csv"],
+            "runtime_image": pin,
+        });
+        fs::write(&job_path, body.to_string()).unwrap();
+        let err = load_job(&job_path).unwrap_err();
+        assert!(err.0.contains("runtime_image"), "{err}");
     }
 
     #[test]
@@ -570,6 +617,7 @@ mod tests {
             memory_bytes: None,
             tenant_id: "local".into(),
             namespace: "default".into(),
+            runtime_image: None,
         };
         let outputs = vec![Output {
             name: "nested/out.csv".into(),
