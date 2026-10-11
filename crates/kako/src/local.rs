@@ -197,10 +197,11 @@ pub fn load_job(path: &Path) -> Result<Job, LocalError> {
     });
     let engine = match parsed.engine.as_deref().unwrap_or("duckdb_sql") {
         "duckdb_sql" | "sql" => Engine::DuckDbSql,
+        "mizuchi" => Engine::Mizuchi,
         "python" => Engine::Python,
         other => {
             return Err(LocalError(format!(
-                "unknown engine `{other}` (want duckdb_sql or python)"
+                "unknown engine `{other}` (want duckdb_sql, mizuchi, or python)"
             )));
         }
     };
@@ -292,6 +293,25 @@ mod tests {
         assert_eq!(job.inputs[0].name, "in");
         assert_eq!(job.inputs[0].path, dir.path().join("in.csv"));
         assert_eq!(job.wall_clock, Duration::from_millis(5000));
+    }
+
+    #[test]
+    fn load_job_selects_mizuchi_when_named() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.csv"), "a\n1\n").unwrap();
+        let job_path = dir.path().join("job.json");
+        fs::write(
+            &job_path,
+            r#"{
+              "engine": "mizuchi",
+              "sql": "COPY (SELECT * FROM in) TO 'outputs/out.csv' (HEADER);",
+              "inputs": {"in": "in.csv"},
+              "outputs": ["out.csv"]
+            }"#,
+        )
+        .unwrap();
+        let job = load_job(&job_path).unwrap();
+        assert_eq!(job.engine, Engine::Mizuchi);
     }
 
     #[test]

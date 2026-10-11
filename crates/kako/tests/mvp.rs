@@ -114,6 +114,46 @@ fn cli_join_twice_same_output_digest() {
 }
 
 #[test]
+fn cli_mizuchi_join() {
+    if !linux_native_ready() {
+        return;
+    }
+    let bar = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/engine-bar");
+    let exe = worker();
+    let dir = tempfile::tempdir().unwrap();
+    fs::copy(bar.join("customers.csv"), dir.path().join("customers.csv")).unwrap();
+    fs::copy(bar.join("orders.csv"), dir.path().join("orders.csv")).unwrap();
+    let job: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(bar.join("join-mizuchi.json")).unwrap()).unwrap();
+    let job_path = dir.path().join("job.json");
+    fs::write(&job_path, job.to_string()).unwrap();
+    let out = dir.path().join("out");
+    let status = Command::new(&exe)
+        .arg("run")
+        .arg(&job_path)
+        .arg("--output")
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "kako run --engine mizuchi failed: {status}"
+    );
+    let csv = fs::read_to_string(out.join("totals.csv")).unwrap();
+    assert!(csv.contains('a'), "{csv}");
+    assert!(csv.contains("25") || csv.contains("25.0"), "{csv}");
+    let receipt = fs::read_to_string(out.join("receipt.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&receipt).unwrap();
+    assert!(
+        v["engine_version"]
+            .as_str()
+            .unwrap()
+            .starts_with("mizuchi "),
+        "{receipt}"
+    );
+}
+
+#[test]
 fn cli_run_fails_closed_without_linux_native() {
     if linux_native_ready() {
         return;

@@ -22,3 +22,5 @@ uses [Semantic Versioning](https://semver.org/).
 - Engine requirements bar ([ADR 0003](docs/decisions/0003-engine-opt-in-bar.md),
   [docs/engine-requirements.md](docs/engine-requirements.md)): new engines are
   opt-in; `scripts/engine-bar/` is the named fixture baseline.
+- Opt-in mizuchi SQL engine: `"engine": "mizuchi"` on a job file. Default
+  remains DuckDB.
