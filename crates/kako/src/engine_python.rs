@@ -20,6 +20,127 @@ pub fn runtime_image_id() -> String {
     format!("python-lockfile:{}", lockfile_digest().0)
 }
 
+/// A resolved Python image: lockfile identity plus optional extra site-packages.
+#[derive(Debug)]
+pub(crate) struct PythonImage {
+    pub id: String,
+    pub site_packages: Option<PathBuf>,
+}
+
+/// Operator catalog of shipped Python images (`KAKO_PYTHON_IMAGES`).
+pub(crate) struct ImageCatalog {
+    pub root: Option<PathBuf>,
+    pub shipped_id: String,
+}
+
+impl ImageCatalog {
+    pub(crate) fn from_env() -> Self {
+        Self {
+            root: std::env::var_os("KAKO_PYTHON_IMAGES").map(PathBuf::from),
+            shipped_id: runtime_image_id(),
+        }
+    }
+
+    /// Select the image the job asked for, or the catalog default.
+    pub(crate) fn select(&self, pin: Option<&str>) -> Result<PythonImage, String> {
+        let wanted = match pin {
+            None => self.default_id()?,
+            Some(pin) => validate_runtime_image_id(pin)?,
+        };
+        self.lookup(&wanted)
+    }
+
+    fn default_id(&self) -> Result<String, String> {
+        let Some(root) = &self.root else {
+            return Ok(self.shipped_id.clone());
+        };
+        let current = root.join("current");
+        if !current.is_file() {
+            return Ok(self.shipped_id.clone());
+        }
+        let raw = fs::read_to_string(&current)
+            .map_err(|error| format!("read python image current: {error}"))?;
+        validate_runtime_image_id(raw.trim())
+    }
+
+    fn lookup(&self, id: &str) -> Result<PythonImage, String> {
+        if let Some(root) = &self.root {
+            let dir = root.join(image_hex(id)?);
+            if dir.is_dir() {
+                return load_catalog_entry(&dir, id);
+            }
+        }
+        if id == self.shipped_id {
+            return Ok(PythonImage {
+                id: id.to_string(),
+                site_packages: None,
+            });
+        }
+        Err(format!(
+            "python runtime image `{id}` is not in the image catalog"
+        ))
+    }
+}
+
+/// Accept `python-lockfile:sha256:<64 hex>` and canonicalize the hex.
+pub(crate) fn validate_runtime_image_id(id: &str) -> Result<String, String> {
+    let hex = image_hex(id)?;
+    if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "python runtime_image must be python-lockfile:sha256:<64 hex>, got `{id}`"
+        ));
+    }
+    Ok(format!(
+        "python-lockfile:sha256:{}",
+        hex.to_ascii_lowercase()
+    ))
+}
+
+fn image_hex(id: &str) -> Result<&str, String> {
+    id.strip_prefix("python-lockfile:sha256:").ok_or_else(|| {
+        format!("python runtime_image must be python-lockfile:sha256:<hex>, got `{id}`")
+    })
+}
+
+fn load_catalog_entry(dir: &Path, expected_id: &str) -> Result<PythonImage, String> {
+    let lockfile = dir.join("requirements.txt");
+    let bytes = fs::read(&lockfile)
+        .map_err(|error| format!("read python image lockfile {}: {error}", lockfile.display()))?;
+    let id = format!("python-lockfile:{}", digest::hash_bytes(&bytes).0);
+    if id != expected_id {
+        return Err(format!(
+            "python image {} lockfile digest is `{id}`, expected `{expected_id}`",
+            dir.display()
+        ));
+    }
+    let site = dir.join("site-packages");
+    let site_packages = if site.is_dir() {
+        Some(site.canonicalize().unwrap_or(site))
+    } else {
+        None
+    };
+    Ok(PythonImage { id, site_packages })
+}
+
+/// Tell the worker which extra site-packages tree to put on PYTHONPATH.
+pub(crate) fn write_python_site(scratch: &Path, site: &Path) -> Result<(), String> {
+    let text = site
+        .to_str()
+        .ok_or_else(|| format!("python site-packages path is not utf-8: {}", site.display()))?;
+    fs::write(scratch.join("python_site"), text)
+        .map_err(|error| format!("write python_site: {error}"))
+}
+
+fn read_python_site(scratch: &Path) -> Option<PathBuf> {
+    let raw = fs::read_to_string(scratch.join("python_site")).ok()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(trimmed))
+    }
+}
+
 /// Digest of the committed hashed lockfile.
 pub fn lockfile_digest() -> Digest {
     digest::hash_bytes(LOCKFILE)
@@ -105,7 +226,7 @@ fn python3_with_runtime() -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
-fn apply_python_env(command: &mut Command, scratch: &Path) {
+fn apply_python_env(command: &mut Command, scratch: &Path, python_site: Option<&Path>) {
     command.env_clear();
     command.env("PYTHONNOUSERSITE", "1");
     command.env("PYTHONDONTWRITEBYTECODE", "1");
@@ -115,6 +236,9 @@ fn apply_python_env(command: &mut Command, scratch: &Path) {
     command.env("TMPDIR", &tmp);
     command.env("TMP", &tmp);
     command.env("TEMP", &tmp);
+    if let Some(site) = python_site {
+        command.env("PYTHONPATH", site);
+    }
 }
 
 /// Landlock extra roots for this interpreter. Skips `/`, `/usr`, and `/sys`.
@@ -182,7 +306,7 @@ pub(crate) fn execute(
     let mut command = Command::new(&interpreter);
     command.arg(scratch.join("kako_run.py"));
     command.current_dir(scratch);
-    apply_python_env(&mut command, scratch);
+    apply_python_env(&mut command, scratch, read_python_site(scratch).as_deref());
     let output = command
         .output()
         .map_err(|error| format!("spawn python: {error}"))?;
@@ -378,6 +502,116 @@ def transform(inputs):
         }
         let code = fs::read_to_string(engine_bar_dir().join("join_pandas.py")).unwrap();
         run_fixture(&code);
+    }
+
+    fn image_id_for(lockfile: &[u8]) -> String {
+        format!("python-lockfile:{}", digest::hash_bytes(lockfile).0)
+    }
+
+    fn write_catalog_image(root: &Path, lockfile: &[u8], version: &str) -> String {
+        let id = image_id_for(lockfile);
+        let hex = id.rsplit(':').next().expect("image id has hex");
+        let dir = root.join(hex);
+        fs::create_dir_all(dir.join("site-packages")).unwrap();
+        fs::write(dir.join("requirements.txt"), lockfile).unwrap();
+        fs::write(
+            dir.join("site-packages/kako_image_marker.py"),
+            format!("VERSION = {version:?}\n"),
+        )
+        .unwrap();
+        id
+    }
+
+    fn run_marker_transform(site: &Path) -> String {
+        let code = r#"
+def transform(inputs):
+    import kako_image_marker as marker
+    import polars as pl
+    return {"marker.csv": pl.DataFrame({"image": [marker.VERSION]})}
+"#;
+        let parent = tempfile::tempdir().unwrap();
+        let scratch = Scratch::create(parent.path(), "python-pin").unwrap();
+        write_manifest(
+            scratch.path(),
+            Engine::Python,
+            code,
+            &[],
+            &["marker.csv".into()],
+        )
+        .unwrap();
+        write_python_site(scratch.path(), site).unwrap();
+        crate::engine::execute_in_scratch(scratch.path()).unwrap();
+        fs::read_to_string(scratch.outputs_dir().join("marker.csv")).unwrap()
+    }
+
+    #[test]
+    fn unpinned_image_is_the_shipped_lockfile() {
+        let catalog = ImageCatalog {
+            root: None,
+            shipped_id: runtime_image_id(),
+        };
+        let image = catalog.select(None).unwrap();
+        assert_eq!(image.id, runtime_image_id());
+        assert!(image.site_packages.is_none());
+    }
+
+    #[test]
+    fn unknown_image_pin_fails_closed() {
+        let catalog = ImageCatalog {
+            root: None,
+            shipped_id: runtime_image_id(),
+        };
+        let pin = format!("python-lockfile:sha256:{}", "ab".repeat(32));
+        let err = catalog.select(Some(&pin)).unwrap_err();
+        assert!(err.contains("not in the image catalog"), "{err}");
+    }
+
+    #[test]
+    fn catalog_entry_must_match_lockfile_digest() {
+        let root = tempfile::tempdir().unwrap();
+        let wanted = image_id_for(b"lock-a\n");
+        let hex = wanted.rsplit(':').next().unwrap();
+        let dir = root.path().join(hex);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("requirements.txt"), b"lock-b\n").unwrap();
+        let catalog = ImageCatalog {
+            root: Some(root.path().to_path_buf()),
+            shipped_id: runtime_image_id(),
+        };
+        let err = catalog.select(Some(&wanted)).unwrap_err();
+        assert!(err.contains("lockfile digest"), "{err}");
+    }
+
+    #[test]
+    fn pinned_lockfile_survives_default_image_upgrade() {
+        if skip_without_python().is_none() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let image_a = write_catalog_image(root.path(), b"lock-a\n", "A");
+        let image_b = write_catalog_image(root.path(), b"lock-b\n", "B");
+        fs::write(root.path().join("current"), &image_a).unwrap();
+        let catalog = ImageCatalog {
+            root: Some(root.path().to_path_buf()),
+            shipped_id: runtime_image_id(),
+        };
+
+        let pinned = catalog.select(Some(&image_a)).unwrap();
+        assert_eq!(pinned.id, image_a);
+        let before = run_marker_transform(pinned.site_packages.as_ref().unwrap());
+
+        fs::write(root.path().join("current"), &image_b).unwrap();
+        let pinned_after = catalog.select(Some(&image_a)).unwrap();
+        assert_eq!(pinned_after.id, image_a);
+        let after = run_marker_transform(pinned_after.site_packages.as_ref().unwrap());
+        assert_eq!(before, after, "pinned output changed after default upgrade");
+        assert!(before.contains('A'), "{before}");
+
+        let unpinned = catalog.select(None).unwrap();
+        assert_eq!(unpinned.id, image_b);
+        let upgraded = run_marker_transform(unpinned.site_packages.as_ref().unwrap());
+        assert!(upgraded.contains('B'), "{upgraded}");
+        assert_ne!(before, upgraded);
     }
 
     #[cfg(target_os = "linux")]

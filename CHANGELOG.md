@@ -40,3 +40,7 @@ uses [Semantic Versioning](https://semver.org/).
   staged frames. Packages come from `runtime/python/requirements.txt`;
   receipts record `runtime_image` as the lockfile digest. Default stays
   DuckDB ([ADR 0005](docs/decisions/0005-python-runtime-image.md)).
+- Python jobs may pin `runtime_image` to a curated lockfile identity.
+  Operators keep prior images under `KAKO_PYTHON_IMAGES`; an unknown pin
+  fails closed. Upgrading the default image does not change a pinned
+  transform ([ADR 0006](docs/decisions/0006-python-package-policy.md)).

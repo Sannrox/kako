@@ -77,6 +77,19 @@ pub struct CompletedRun {
 /// `JobSource::complete` can copy outputs before cleanup.
 pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Failure> {
     QuotaKey::from_job(job).map_err(Failure::Runner)?;
+    if !matches!(job.engine, crate::Engine::Python) && job.runtime_image.is_some() {
+        return Err(Failure::Runner(
+            "runtime_image is only valid for python jobs".into(),
+        ));
+    }
+    let python_image = match job.engine {
+        crate::Engine::DuckDbSql | crate::Engine::Mizuchi => None,
+        crate::Engine::Python => Some(
+            engine_python::ImageCatalog::from_env()
+                .select(job.runtime_image.as_deref())
+                .map_err(Failure::Runner)?,
+        ),
+    };
     let python = match job.engine {
         crate::Engine::DuckDbSql | crate::Engine::Mizuchi => None,
         crate::Engine::Python => {
@@ -98,6 +111,12 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
     let code_digest = hash_bytes(job.code.as_bytes());
     engine::write_manifest(scratch.path(), job.engine, &job.code, &staged, &job.outputs)
         .map_err(Failure::Runner)?;
+    if let Some(site) = python_image
+        .as_ref()
+        .and_then(|image| image.site_packages.as_ref())
+    {
+        engine_python::write_python_site(scratch.path(), site).map_err(Failure::Runner)?;
+    }
 
     let backend = sandbox::select_backend()?;
     let cpu_time_secs = Some(cpu_limit_secs(job)?);
@@ -111,6 +130,12 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
     } else {
         Vec::new()
     };
+    if let Some(site) = python_image
+        .as_ref()
+        .and_then(|image| image.site_packages.as_ref())
+    {
+        extra_readable.push(site.clone());
+    }
     extra_readable.push(config.worker.clone());
     let (status, stdout, stderr, usage) = sandbox::run_sandboxed(
         command,
@@ -160,7 +185,7 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
         cpu_usec: usage.cpu_usec,
         memory_peak_bytes: usage.memory_peak_bytes,
         lineage,
-        runtime_image: python.map(|_| engine_python::runtime_image_id()),
+        runtime_image: python_image.map(|image| image.id),
     };
     Ok(CompletedRun {
         outputs,
@@ -304,6 +329,7 @@ mod tests {
             memory_bytes: None,
             tenant_id: "local".into(),
             namespace: "default".into(),
+            runtime_image: None,
         };
         let mut source = Fake {
             jobs: vec![job],
@@ -328,6 +354,38 @@ mod tests {
     }
 
     #[test]
+    fn unknown_python_image_pin_fails_before_sandbox() {
+        let parent = tempfile::tempdir().unwrap();
+        let pin = format!("python-lockfile:sha256:{}", "ab".repeat(32));
+        let job = Job {
+            id: "pin".into(),
+            engine: Engine::Python,
+            code: "def transform(inputs):\n    return {}\n".into(),
+            inputs: vec![],
+            outputs: vec!["out.csv".into()],
+            wall_clock: Duration::from_secs(5),
+            cpu_time: None,
+            memory_bytes: None,
+            tenant_id: "local".into(),
+            namespace: "default".into(),
+            runtime_image: Some(pin),
+        };
+        match execute_job(
+            &job,
+            &RunnerConfig {
+                worker: PathBuf::from("/bin/false"),
+                scratch_parent: parent.path().to_path_buf(),
+            },
+        ) {
+            Err(Failure::Runner(message)) => {
+                assert!(message.contains("not in the image catalog"), "{message}");
+            }
+            Err(other) => panic!("expected runner failure, got {other}"),
+            Ok(_) => panic!("unknown python image pin must fail closed"),
+        }
+    }
+
+    #[test]
     fn missing_tenant_is_a_runner_failure() {
         let parent = tempfile::tempdir().unwrap();
         let job = Job {
@@ -341,6 +399,7 @@ mod tests {
             memory_bytes: None,
             tenant_id: String::new(),
             namespace: "default".into(),
+            runtime_image: None,
         };
         let mut source = Fake {
             jobs: vec![job],
@@ -388,6 +447,7 @@ mod tests {
             memory_bytes: None,
             tenant_id: tenant.into(),
             namespace: "default".into(),
+            runtime_image: None,
         }
     }
 
@@ -408,6 +468,7 @@ mod tests {
             memory_bytes: None,
             tenant_id: tenant.into(),
             namespace: "default".into(),
+            runtime_image: None,
         }
     }
 

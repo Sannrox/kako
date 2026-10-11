@@ -9,5 +9,6 @@ Decisions that must outlive a single PR.
 | [0003](0003-engine-opt-in-bar.md) | New engines are opt-in behind a published bar | Accepted |
 | [0004](0004-quota-authority.md) | Job source owns quotas; kako enforces per-run limits | Accepted |
 | [0005](0005-python-runtime-image.md) | Python engine uses a baked runtime image and cgroup memory | Accepted |
+| [0006](0006-python-package-policy.md) | Python jobs pin a curated runtime image | Accepted |
 
 Template: short context, decision, consequences, rejected alternatives.

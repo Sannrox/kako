@@ -62,6 +62,9 @@ pub struct Job {
     pub tenant_id: String,
     /// Namespace inside the tenant. Required; the local source fills a default.
     pub namespace: String,
+    /// Pin of the Python runtime image (`python-lockfile:sha256:…`). SQL
+    /// jobs leave this unset; unpinned Python jobs use the catalog default.
+    pub runtime_image: Option<String>,
 }
 
 /// Key for quotas, claims, and receipts: `(tenant_id, namespace)`.

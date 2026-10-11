@@ -7,8 +7,9 @@ outputs together with a receipt describing exactly what ran.
 > Status: SQL MVP plus opt-in Python. Local jobs run DuckDB (default) or
 > Python in a [kekkai](https://github.com/Sannrox/kekkai) sandbox and write
 > outputs plus a receipt. External job sources are not implemented yet.
-> See [ADR 0002](docs/decisions/0002-sandboxed-transform-runner.md) and
-> [ADR 0005](docs/decisions/0005-python-runtime-image.md).
+> See [ADR 0002](docs/decisions/0002-sandboxed-transform-runner.md),
+> [ADR 0005](docs/decisions/0005-python-runtime-image.md), and
+> [ADR 0006](docs/decisions/0006-python-package-policy.md).
 
 ## How it works
 
@@ -85,8 +86,12 @@ the sandbox reports them.
 - **Python** opt-in: set `"engine": "python"` and `"code"` with
   `def transform(inputs)` returning output frames. Packages (Polars, pandas,
   pyarrow, DuckDB) come from the hashed lockfile in `runtime/python/`; user
-  code has no network. Receipts record `runtime_image` as the lockfile
-  digest. Set `KAKO_PYTHON` when the interpreter is not on `PATH`.
+  code has no network. Jobs may pin `runtime_image` to that lockfile
+  digest so a later default-image upgrade does not change output
+  ([ADR 0006](docs/decisions/0006-python-package-policy.md)). Receipts
+  record the image that ran. Operators keep prior images in
+  `KAKO_PYTHON_IMAGES`. Set `KAKO_PYTHON` when the interpreter is not on
+  `PATH`.
 
 Adding or switching an engine is opt-in behind the bar in
 [docs/engine-requirements.md](docs/engine-requirements.md)
@@ -114,7 +119,7 @@ Every run produces a receipt with:
 - the digest of each input;
 - the digest of the code;
 - the engine and its version;
-- `runtime_image` for Python jobs (lockfile digest);
+- `runtime_image` for Python jobs (pinned lockfile digest);
 - the digest of each output;
 - start time and duration.
 
