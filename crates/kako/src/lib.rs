@@ -11,6 +11,7 @@ use std::time::{Duration, SystemTime};
 pub mod digest;
 pub mod engine;
 mod engine_mizuchi;
+mod engine_python;
 pub mod fair;
 pub mod local;
 pub mod receipt;
@@ -29,7 +30,7 @@ pub enum Engine {
     DuckDbSql,
     /// SQL executed by the opt-in mizuchi engine.
     Mizuchi,
-    /// Python (Polars, pandas) executed in a sandboxed interpreter. Planned.
+    /// Python (Polars, pandas) executed in a sandboxed interpreter.
     Python,
 }
 
@@ -120,6 +121,9 @@ pub struct Receipt {
     /// Engine-reported reads, writes, and plan. Present for mizuchi; omitted
     /// from DuckDB receipts so v1 JSON for the default engine stays the same.
     pub lineage: Option<Lineage>,
+    /// Baked runtime identity for Python jobs (`python-lockfile:sha256:…`).
+    /// Omitted from SQL receipts.
+    pub runtime_image: Option<String>,
 }
 
 /// Stable record of what one run read and wrote, for receipts.

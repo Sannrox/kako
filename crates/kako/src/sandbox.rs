@@ -13,7 +13,7 @@ use crate::Failure;
 /// Backend used for `kako run`. Only `linux_native` confines writes and
 /// denies network; anything weaker is a runner failure.
 pub fn select_backend() -> Result<Backend, Failure> {
-    let linux = settings(Backend::LinuxNative, None, None, extra_readable_roots(None));
+    let linux = settings(Backend::LinuxNative, None, None, extra_readable_roots(&[]));
     match kekkai::health(&linux) {
         Health::Ok(_) => Ok(Backend::LinuxNative),
         Health::Warning(message) | Health::Error(message) => Err(Failure::Runner(format!(
@@ -34,7 +34,7 @@ pub fn doctor_report() -> String {
         Backend::LinuxNative,
         None,
         None,
-        extra_readable_roots(None),
+        extra_readable_roots(&[]),
     ));
     let rlimit = kekkai::health(&settings(Backend::Rlimit, None, None, Vec::new()));
     format!(
@@ -105,13 +105,10 @@ fn settings(
     }
 }
 
-fn extra_readable_roots(worker: Option<&Path>) -> Vec<PathBuf> {
+fn extra_readable_roots(extra: &[PathBuf]) -> Vec<PathBuf> {
     let mut roots = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         push_executable(&mut roots, &exe);
-    }
-    if let Some(worker) = worker {
-        push_executable(&mut roots, worker);
     }
     // The engine child reads `/proc/self/cgroup`. That path is the child's
     // pid, which the parent cannot name when it builds the ruleset, so the
@@ -129,9 +126,23 @@ fn extra_readable_roots(worker: Option<&Path>) -> Vec<PathBuf> {
             push_existing(&mut roots, path);
         }
     }
+    for path in extra {
+        if too_broad(path) {
+            continue;
+        }
+        if path.is_file() {
+            push_executable(&mut roots, path);
+        } else {
+            push_existing(&mut roots, path);
+        }
+    }
     roots.sort();
     roots.dedup();
     roots
+}
+
+fn too_broad(path: &Path) -> bool {
+    path == Path::new("/") || path == Path::new("/usr") || path == Path::new("/sys")
 }
 
 fn push_existing(roots: &mut Vec<PathBuf>, path: &Path) {
@@ -162,8 +173,8 @@ fn fs_canonicalize(path: &Path) -> io::Result<PathBuf> {
 
 /// Spawn `command` under kekkai, wait up to `wall_clock`, kill the group on timeout.
 ///
-/// `worker` is granted read/execute under `linux_native` so the child binary
-/// can be loaded even when it is not under `/usr`.
+/// `extra_readable` grants the worker binary and interpreter prefixes under
+/// `linux_native`. `/usr` and `/sys` are skipped.
 pub fn run_sandboxed(
     mut command: Command,
     scratch: &Path,
@@ -171,13 +182,13 @@ pub fn run_sandboxed(
     wall_clock: Duration,
     cpu_time_secs: Option<u64>,
     memory_bytes: Option<u64>,
-    worker: &Path,
+    extra_readable: &[PathBuf],
 ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>, ChildUsage), Failure> {
     let deadline = Instant::now()
         .checked_add(wall_clock)
         .ok_or_else(|| Failure::Runner("wall-clock timeout overflows the runner clock".into()))?;
     let readable = if matches!(backend, Backend::LinuxNative) {
-        extra_readable_roots(Some(worker))
+        extra_readable_roots(extra_readable)
     } else {
         Vec::new()
     };
@@ -287,9 +298,10 @@ mod tests {
 
     #[test]
     fn extra_readable_roots_do_not_grant_sys() {
-        let roots = extra_readable_roots(None);
+        let roots = extra_readable_roots(&[PathBuf::from("/usr"), PathBuf::from("/sys")]);
         for root in &roots {
             assert_ne!(root.as_path(), Path::new("/sys"), "{roots:?}");
+            assert_ne!(root.as_path(), Path::new("/usr"), "{roots:?}");
         }
     }
 
@@ -299,7 +311,7 @@ mod tests {
         if !proc.is_dir() {
             return;
         }
-        let roots = extra_readable_roots(None);
+        let roots = extra_readable_roots(&[]);
         let granted = roots.iter().any(|root| {
             root == proc
                 || fs_canonicalize(proc)
@@ -315,7 +327,7 @@ mod tests {
         if !cgroup.exists() {
             return;
         }
-        let roots = extra_readable_roots(None);
+        let roots = extra_readable_roots(&[]);
         let granted = roots.iter().any(|root| {
             root == cgroup
                 || fs_canonicalize(cgroup)
@@ -359,7 +371,7 @@ mod tests {
             Duration::from_millis(400),
             None,
             None,
-            Path::new("/bin/sleep"),
+            &[],
         )
         .unwrap_err();
         assert!(
@@ -379,7 +391,7 @@ mod tests {
             Duration::MAX,
             None,
             None,
-            Path::new("/bin/true"),
+            &[],
         )
         .unwrap_err();
         assert!(
@@ -403,7 +415,7 @@ mod tests {
             Duration::from_secs(1),
             None,
             Some(1024 * 1024),
-            Path::new("/bin/true"),
+            &[],
         )
         .unwrap_err();
         assert!(

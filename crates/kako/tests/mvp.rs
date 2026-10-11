@@ -291,7 +291,7 @@ fn network_from_the_child_is_denied_on_linux_native() {
         Duration::from_secs(10),
         None,
         None,
-        &worker,
+        std::slice::from_ref(&worker),
     )
     .unwrap();
     assert_eq!(
@@ -393,4 +393,286 @@ fn successful_run_leaves_no_scratch() {
     assert!(scratch_leftovers(&scratch_parent).is_empty());
     assert!(out.join("totals.csv").is_file());
     assert!(out.join("receipt.json").is_file());
+}
+
+fn python_runtime_available() -> bool {
+    let venv = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../runtime/python/.venv/bin/python");
+    if venv.is_file() {
+        return true;
+    }
+    Command::new("python3")
+        .args(["-c", "import polars, pandas"])
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
+fn engine_bar_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/engine-bar")
+}
+
+fn python_join_job(dir: &Path, source: &str) -> std::path::PathBuf {
+    let bar = engine_bar_dir();
+    fs::copy(bar.join("customers.csv"), dir.join("customers.csv")).unwrap();
+    fs::copy(bar.join("orders.csv"), dir.join("orders.csv")).unwrap();
+    let code = fs::read_to_string(bar.join(source)).unwrap();
+    let job = dir.join("job.json");
+    let body = serde_json::json!({
+        "id": "join-python",
+        "engine": "python",
+        "code": code,
+        "inputs": {"customers": "customers.csv", "orders": "orders.csv"},
+        "outputs": ["totals.csv"],
+        "timeout_ms": 30000
+    });
+    fs::write(&job, body.to_string()).unwrap();
+    job
+}
+
+fn assert_join_csv(csv: &str) {
+    assert!(csv.contains('a'), "{csv}");
+    assert!(csv.contains('b'), "{csv}");
+    assert!(
+        csv.contains("25") || csv.contains("25.0"),
+        "expected aggregate 25, got {csv}"
+    );
+    assert!(csv.contains('7'), "expected aggregate 7, got {csv}");
+}
+
+#[test]
+fn cli_python_polars_join() {
+    if !linux_native_ready() {
+        return;
+    }
+    if !python_runtime_available() {
+        eprintln!("skip: python runtime with polars is unavailable");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let job = python_join_job(dir.path(), "join_polars.py");
+    let out = dir.path().join("out");
+    let status = Command::new(worker())
+        .arg("run")
+        .arg(&job)
+        .arg("--output")
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(status.success(), "kako run python polars failed: {status}");
+    let csv = fs::read_to_string(out.join("totals.csv")).unwrap();
+    assert_join_csv(&csv);
+    let receipt: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(out.join("receipt.json")).unwrap()).unwrap();
+    assert!(
+        receipt["engine_version"]
+            .as_str()
+            .unwrap()
+            .starts_with("python "),
+        "{receipt}"
+    );
+    assert!(
+        receipt["runtime_image"]
+            .as_str()
+            .unwrap()
+            .starts_with("python-lockfile:sha256:"),
+        "{receipt}"
+    );
+}
+
+#[test]
+fn cli_python_pandas_join() {
+    if !linux_native_ready() {
+        return;
+    }
+    if !python_runtime_available() {
+        eprintln!("skip: python runtime with pandas is unavailable");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let job = python_join_job(dir.path(), "join_pandas.py");
+    let out = dir.path().join("out");
+    let status = Command::new(worker())
+        .arg("run")
+        .arg(&job)
+        .arg("--output")
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(status.success(), "kako run python pandas failed: {status}");
+    let csv = fs::read_to_string(out.join("totals.csv")).unwrap();
+    assert_join_csv(&csv);
+}
+
+#[test]
+fn python_user_code_cannot_pip_install_or_open_sockets() {
+    if !linux_native_ready() {
+        return;
+    }
+    if !python_runtime_available() {
+        eprintln!("skip: python runtime unavailable");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("customers.csv"), "id,name\n1,a\n").unwrap();
+    fs::write(dir.path().join("orders.csv"), "customer_id,amount\n1,1\n").unwrap();
+    let probes = [
+        (
+            "pip",
+            r#"
+def transform(inputs):
+    import subprocess, sys
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "does-not-exist-kako-probe"])
+    return {}
+"#,
+        ),
+        (
+            "socket",
+            r#"
+def transform(inputs):
+    import socket
+    socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    return {}
+"#,
+        ),
+    ];
+    for (name, code) in probes {
+        let job = dir.path().join(format!("{name}.json"));
+        let body = serde_json::json!({
+            "id": name,
+            "engine": "python",
+            "code": code,
+            "inputs": {"customers": "customers.csv", "orders": "orders.csv"},
+            "outputs": ["totals.csv"],
+            "timeout_ms": 15000
+        });
+        fs::write(&job, body.to_string()).unwrap();
+        let output = Command::new(worker())
+            .arg("run")
+            .arg(&job)
+            .arg("--output")
+            .arg(dir.path().join(format!("out-{name}")))
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "{name} must fail closed, stderr={}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn python_oom_is_a_limit_and_leaves_the_runner_alive() {
+    if !linux_native_ready() {
+        return;
+    }
+    if !python_runtime_available() {
+        eprintln!("skip: python runtime unavailable");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    fs::copy(
+        engine_bar_dir().join("customers.csv"),
+        dir.path().join("customers.csv"),
+    )
+    .unwrap();
+    fs::copy(
+        engine_bar_dir().join("orders.csv"),
+        dir.path().join("orders.csv"),
+    )
+    .unwrap();
+    let job_path = dir.path().join("oom.json");
+    let body = serde_json::json!({
+        "id": "oom",
+        "engine": "python",
+        "code": "def transform(inputs):\n    blob = bytearray(512 * 1024 * 1024)\n    return {\"totals.csv\": inputs[\"customers\"]}\n",
+        "inputs": {"customers": "customers.csv", "orders": "orders.csv"},
+        "outputs": ["totals.csv"],
+        "timeout_ms": 30000,
+        "memory_bytes": 32 * 1024 * 1024
+    });
+    fs::write(&job_path, body.to_string()).unwrap();
+    let scratch_parent = dir.path().join("scratch");
+    fs::create_dir_all(&scratch_parent).unwrap();
+    let mut source = LocalSource::from_job_file(&job_path, dir.path().join("out")).unwrap();
+    let config = RunnerConfig {
+        worker: worker(),
+        scratch_parent: scratch_parent.clone(),
+    };
+    let finishes = match run_source(&mut source, &config) {
+        Ok(finishes) => finishes,
+        Err(error) => {
+            eprintln!("skip: python oom run could not start: {error}");
+            return;
+        }
+    };
+    match &finishes[0] {
+        JobFinish::Failed {
+            failure: Failure::Limit(message),
+            ..
+        } => assert!(
+            message.contains("oom") || message.contains("memory") || message.contains("limit"),
+            "{message}"
+        ),
+        JobFinish::Failed {
+            failure: Failure::Runner(message),
+            ..
+        } if message.contains("memory limit") => {
+            eprintln!("skip: cgroup memory limit cannot be set: {message}");
+            return;
+        }
+        other => panic!("expected limit OOM, got {other:?}"),
+    }
+    assert!(scratch_leftovers(&scratch_parent).is_empty());
+    let follow = python_join_job(dir.path(), "join_polars.py");
+    let out = dir.path().join("after");
+    let status = Command::new(worker())
+        .arg("run")
+        .arg(&follow)
+        .arg("--output")
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(
+        status.success(),
+        "runner must still run after a Python OOM: {status}"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn python_polars_join_finishes_under_cgroup_memory() {
+    if !linux_native_ready() {
+        return;
+    }
+    if !python_runtime_available() {
+        eprintln!("skip: python runtime unavailable");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let job = python_join_job(dir.path(), "join_polars.py");
+    let raw = fs::read_to_string(&job).unwrap();
+    let mut body: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    body["memory_bytes"] = serde_json::json!(256 * 1024 * 1024);
+    fs::write(&job, body.to_string()).unwrap();
+    let out = dir.path().join("out");
+    let output = Command::new(worker())
+        .arg("run")
+        .arg(&job)
+        .arg("--output")
+        .arg(&out)
+        .output()
+        .unwrap();
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("memory limit") {
+            eprintln!("skip: cgroup memory limit cannot be set: {stderr}");
+            return;
+        }
+        panic!("polars join under cgroup memory failed: {stderr}");
+    }
+    let csv = fs::read_to_string(out.join("totals.csv")).unwrap();
+    assert_join_csv(&csv);
 }

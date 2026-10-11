@@ -1,4 +1,5 @@
 /target
+runtime/python/.venv/
 .state/
 .kako-state/
 /.worktrees/
