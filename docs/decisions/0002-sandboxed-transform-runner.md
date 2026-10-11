@@ -1,6 +1,6 @@
 # ADR 0002: kako is a sandboxed transform runner with pluggable job sources
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-09
 - Supersedes: —
 

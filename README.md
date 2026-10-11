@@ -4,16 +4,16 @@ A sandboxed data-transform runner. kako takes a job (SQL or Python plus input
 datasets), runs it in an isolated, short-lived child process, and returns the
 outputs together with a receipt describing exactly what ran.
 
-> Status: early skeleton. The design is proposed in
-> [ADR 0002](docs/decisions/0002-sandboxed-transform-runner.md); nothing runs
-> yet.
+> Status: SQL MVP. Local jobs run DuckDB in a [kekkai](https://github.com/Sannrox/kekkai)
+> sandbox and write outputs plus a receipt. Python and external job sources
+> are not implemented yet. See [ADR 0002](docs/decisions/0002-sandboxed-transform-runner.md).
 
 ## How it works
 
 1. **Take a job** from a [job source](#job-sources).
 2. **Stage** the inputs into a per-run scratch directory.
 3. **Run** the code in a [kekkai](https://github.com/Sannrox/kekkai) sandbox:
-   no network, CPU, memory and wall-clock limits, writes confined to the
+   no network, CPU and wall-clock limits, writes confined to the
    scratch directory.
 4. **Hash** the outputs and build a receipt.
 5. **Report** the outputs and receipt back to the job source.
@@ -27,6 +27,36 @@ outputs together with a receipt describing exactly what ran.
   └──────────────┘  complete / └──────────────────────────────┘
                     fail + receipt
 ```
+
+## CLI
+
+```bash
+kako doctor
+kako run job.json --output ./out
+```
+
+`kako doctor` prints host capabilities. `kako run` uses kekkai `linux_native`
+(Landlock filesystem allowlist and seccomp network deny). If that backend
+cannot be applied, the run fails closed.
+
+A job file is JSON:
+
+```json
+{
+  "id": "join-agg",
+  "sql": "COPY (\n  SELECT c.id, sum(o.amount) AS total\n  FROM customers c\n  JOIN orders o ON o.customer_id = c.id\n  GROUP BY c.id\n  ORDER BY c.id\n) TO 'outputs/totals.csv' (HEADER, DELIMITER ',');",
+  "inputs": {
+    "customers": "customers.csv",
+    "orders": "orders.csv"
+  },
+  "outputs": ["totals.csv"],
+  "timeout_ms": 60000
+}
+```
+
+Input paths are relative to the job file. Each input is staged as a DuckDB
+view with that name. User SQL writes files under `outputs/`. kako copies those
+files and `receipt.json` into `--output` (default `./out`).
 
 ## Engines
 

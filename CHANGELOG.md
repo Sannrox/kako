@@ -8,6 +8,13 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `kako run <job.json>`: local job source, copied input staging, sandboxed
+  DuckDB SQL worker under kekkai `linux_native`, SHA-256 receipts, and
+  scratch cleanup on success, failure, and timeout. Runs fail closed when
+  `linux_native` cannot be applied.
+- `kako doctor`: reports the kekkai backend the host can enforce.
+- Receipt JSON (`receipt_version` 1): input and code digests, engine version,
+  output digests, start time, duration.
 - Skeleton runner binary and core types: `JobSource`, `Job`, `Output`,
   `Receipt`, `Failure`.
 - ADR 0002: sandboxed transform runner with pluggable job sources.
