@@ -102,34 +102,50 @@ fn settings(
 
 fn extra_readable_roots(worker: Option<&Path>) -> Vec<PathBuf> {
     let mut roots = Vec::new();
-    let mut add = |path: &Path| {
-        if let Ok(canon) = fs_canonicalize(path) {
-            if let Some(parent) = canon.parent() {
-                roots.push(parent.to_path_buf());
-            }
-            roots.push(canon);
-        } else {
-            roots.push(path.to_path_buf());
-        }
-    };
     if let Ok(exe) = std::env::current_exe() {
-        add(&exe);
+        push_executable(&mut roots, &exe);
     }
     if let Some(worker) = worker {
-        add(worker);
+        push_executable(&mut roots, worker);
+    }
+    for path in [Path::new("/proc/cpuinfo"), Path::new("/proc/meminfo")] {
+        if path.exists() {
+            push_existing(&mut roots, path);
+        }
     }
     for path in [
-        Path::new("/proc/cpuinfo"),
-        Path::new("/proc/meminfo"),
         Path::new("/sys/devices/system/cpu"),
+        Path::new("/sys/fs/cgroup"),
     ] {
         if path.exists() {
-            add(path);
+            push_existing(&mut roots, path);
         }
     }
     roots.sort();
     roots.dedup();
     roots
+}
+
+fn push_existing(roots: &mut Vec<PathBuf>, path: &Path) {
+    if let Ok(canon) = fs_canonicalize(path) {
+        roots.push(canon);
+    } else {
+        roots.push(path.to_path_buf());
+    }
+}
+
+/// Landlock needs the directory that holds the worker binary. Do not apply
+/// that parent rule to `/proc/*`: the parent is `/proc`, which includes
+/// `/proc/self/root`.
+fn push_executable(roots: &mut Vec<PathBuf>, path: &Path) {
+    if let Ok(canon) = fs_canonicalize(path) {
+        if let Some(parent) = canon.parent() {
+            roots.push(parent.to_path_buf());
+        }
+        roots.push(canon);
+    } else {
+        roots.push(path.to_path_buf());
+    }
 }
 
 fn fs_canonicalize(path: &Path) -> io::Result<PathBuf> {
@@ -163,10 +179,11 @@ pub fn run_sandboxed(
         .apply(&mut command)
         .map_err(|error| Failure::Runner(format!("sandbox cannot be applied: {error}")))?;
     command.current_dir(scratch);
+    let tmp = scratch.join("tmp");
     command.env("HOME", scratch);
-    command.env("TMPDIR", scratch);
-    command.env("TMP", scratch);
-    command.env("TEMP", scratch);
+    command.env("TMPDIR", &tmp);
+    command.env("TMP", &tmp);
+    command.env("TEMP", &tmp);
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
 
@@ -251,6 +268,31 @@ pub fn probe_network_exit() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extra_readable_roots_do_not_grant_proc_or_sys() {
+        let roots = extra_readable_roots(None);
+        for root in &roots {
+            assert_ne!(root.as_path(), Path::new("/proc"), "{roots:?}");
+            assert_ne!(root.as_path(), Path::new("/sys"), "{roots:?}");
+        }
+    }
+
+    #[test]
+    fn extra_readable_roots_include_cgroup_when_present() {
+        let cgroup = Path::new("/sys/fs/cgroup");
+        if !cgroup.exists() {
+            return;
+        }
+        let roots = extra_readable_roots(None);
+        let granted = roots.iter().any(|root| {
+            root == cgroup
+                || fs_canonicalize(cgroup)
+                    .map(|canon| root == &canon)
+                    .unwrap_or(false)
+        });
+        assert!(granted, "expected {cgroup:?} in {roots:?}");
+    }
 
     #[test]
     fn doctor_names_a_backend() {

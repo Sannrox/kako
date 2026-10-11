@@ -61,6 +61,8 @@ fn execute_in_current_dir(scratch: &Path) -> Result<String, String> {
         serde_json::from_str(&raw).map_err(|error| format!("parse manifest: {error}"))?;
     let tmp = scratch.join("tmp");
     let db_path = scratch.join("engine.duckdb");
+    let tmp_s = tmp.to_string_lossy().into_owned();
+    let home_s = scratch.to_string_lossy().into_owned();
     let config = Config::default()
         .threads(1)
         .map_err(|error| format!("duckdb config threads: {error}"))?
@@ -68,12 +70,27 @@ fn execute_in_current_dir(scratch: &Path) -> Result<String, String> {
         .map_err(|error| format!("duckdb config autoload: {error}"))?
         .max_memory("256MB")
         .map_err(|error| format!("duckdb config memory: {error}"))?
-        .with("temp_directory", tmp.to_string_lossy().as_ref())
-        .map_err(|error| format!("duckdb config temp: {error}"))?;
+        .with("temp_directory", &tmp_s)
+        .map_err(|error| format!("duckdb config temp: {error}"))?
+        .with("home_directory", &home_s)
+        .map_err(|error| format!("duckdb config home: {error}"))?
+        .with("extension_directory", &tmp_s)
+        .map_err(|error| format!("duckdb config extensions: {error}"))?
+        .with("enable_external_file_cache", "false")
+        .map_err(|error| format!("duckdb config file cache: {error}"))?
+        .with("allocator_background_threads", "false")
+        .map_err(|error| format!("duckdb config allocator: {error}"))?;
     let conn = Connection::open_with_flags(&db_path, config)
         .map_err(|error| format!("open duckdb: {error}"))?;
-    conn.execute_batch("SET enable_progress_bar=false")
-        .map_err(|error| format!("duckdb progress: {error}"))?;
+    conn.execute_batch(
+        "SET enable_progress_bar=false;\n\
+         SET autoload_known_extensions=false;\n\
+         SET autoinstall_known_extensions=false;\n\
+         SET enable_external_file_cache=false;\n\
+         SET allocator_background_threads=false;\n\
+         SET disabled_filesystems='HTTPFileSystem';",
+    )
+    .map_err(|error| format!("duckdb settings: {error}"))?;
     for input in &manifest.inputs {
         let view = quote_ident(&input.name);
         let abs = scratch.join(&input.relative);
@@ -113,6 +130,28 @@ mod tests {
     use crate::Input;
     use crate::stage::Scratch;
     use std::fs;
+
+    #[test]
+    fn copy_constant_row_writes_output() {
+        let parent = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        let input = src.path().join("in.csv");
+        fs::write(&input, "x\n1\n").unwrap();
+        let scratch = Scratch::create(parent.path(), "probe").unwrap();
+        let staged = scratch
+            .stage_inputs(&[Input {
+                name: "in".into(),
+                path: input,
+            }])
+            .unwrap();
+        let sql = "COPY (SELECT 1 AS x) TO 'outputs/one.csv' (HEADER, DELIMITER ',');";
+        write_manifest(scratch.path(), sql, &staged).unwrap();
+        let version = execute_in_scratch(scratch.path()).unwrap();
+        assert!(version.starts_with("duckdb "), "{version}");
+        let csv = fs::read_to_string(scratch.outputs_dir().join("one.csv")).unwrap();
+        assert!(csv.contains('x'), "{csv}");
+        assert!(csv.contains('1'), "{csv}");
+    }
 
     #[test]
     fn join_and_aggregate_writes_output() {

@@ -211,19 +211,25 @@ fn job_error_removes_scratch() {
         scratch_parent: scratch_parent.clone(),
     };
     let finishes = run_source(&mut source, &config).unwrap();
-    assert!(
-        matches!(
-            &finishes[0],
-            JobFinish::Failed {
-                failure: Failure::Job(_),
-                ..
-            }
-        ),
-        "{finishes:?}"
-    );
+    match &finishes[0] {
+        JobFinish::Failed {
+            failure: Failure::Job(message),
+            ..
+        } => {
+            assert!(
+                message.contains("this_function_does_not_exist") || message.contains("sql:"),
+                "{message}"
+            );
+        }
+        other => panic!("expected job error, got {other:?}"),
+    }
     assert!(scratch_leftovers(&scratch_parent).is_empty());
     let reported = fs::read_to_string(dir.path().join("out/failure.txt")).unwrap();
     assert!(reported.contains("job:"), "{reported}");
+    assert!(
+        reported.contains("this_function_does_not_exist") || reported.contains("sql:"),
+        "{reported}"
+    );
 }
 
 #[test]
@@ -250,6 +256,49 @@ fn network_from_the_child_is_denied_on_linux_native() {
         Some(2),
         "probe should be denied (exit 2), stderr={}",
         String::from_utf8_lossy(&stderr)
+    );
+}
+
+#[test]
+fn cli_copy_constant_row() {
+    if !linux_native_ready() {
+        return;
+    }
+    let exe = worker();
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("in.csv"), "x\n1\n").unwrap();
+    let job = dir.path().join("job.json");
+    fs::write(
+        &job,
+        r#"{
+          "id": "probe",
+          "sql": "COPY (SELECT 1 AS x) TO 'outputs/one.csv' (HEADER, DELIMITER ',');",
+          "inputs": {"in": "in.csv"},
+          "outputs": ["one.csv"],
+          "timeout_ms": 15000
+        }"#,
+    )
+    .unwrap();
+    let out = dir.path().join("out");
+    let status = Command::new(&exe)
+        .arg("run")
+        .arg(&job)
+        .arg("--output")
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(status.success(), "kako run failed: {status}");
+    let csv = fs::read_to_string(out.join("one.csv")).unwrap();
+    assert!(csv.contains('x'), "{csv}");
+    assert!(csv.contains('1'), "{csv}");
+    let receipt = fs::read_to_string(out.join("receipt.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&receipt).unwrap();
+    assert_eq!(v["receipt_version"], 1);
+    assert!(
+        v["outputs"]["one.csv"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
     );
 }
 
