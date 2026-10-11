@@ -118,6 +118,15 @@ fn extra_readable_roots(worker: Option<&Path>) -> Vec<PathBuf> {
     if let Some(worker) = worker {
         add(worker);
     }
+    for path in [
+        Path::new("/proc/cpuinfo"),
+        Path::new("/proc/meminfo"),
+        Path::new("/sys/devices/system/cpu"),
+    ] {
+        if path.exists() {
+            add(path);
+        }
+    }
     roots.sort();
     roots.dedup();
     roots
@@ -156,6 +165,8 @@ pub fn run_sandboxed(
     command.current_dir(scratch);
     command.env("HOME", scratch);
     command.env("TMPDIR", scratch);
+    command.env("TMP", scratch);
+    command.env("TEMP", scratch);
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
 

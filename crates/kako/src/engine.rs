@@ -66,10 +66,14 @@ fn execute_in_current_dir(scratch: &Path) -> Result<String, String> {
         .map_err(|error| format!("duckdb config threads: {error}"))?
         .enable_autoload_extension(false)
         .map_err(|error| format!("duckdb config autoload: {error}"))?
+        .max_memory("256MB")
+        .map_err(|error| format!("duckdb config memory: {error}"))?
         .with("temp_directory", tmp.to_string_lossy().as_ref())
         .map_err(|error| format!("duckdb config temp: {error}"))?;
     let conn = Connection::open_with_flags(&db_path, config)
         .map_err(|error| format!("open duckdb: {error}"))?;
+    conn.execute_batch("SET enable_progress_bar=false")
+        .map_err(|error| format!("duckdb progress: {error}"))?;
     for input in &manifest.inputs {
         let view = quote_ident(&input.name);
         let abs = scratch.join(&input.relative);
