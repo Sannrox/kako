@@ -220,6 +220,46 @@ mod tests {
         assert!(csv.contains('7'), "expected aggregate 7, got {csv}");
     }
 
+    fn engine_bar_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/engine-bar")
+    }
+
+    #[test]
+    fn engine_bar_join_matches_fixture() {
+        let bar = engine_bar_dir();
+        let job: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(bar.join("join.json")).expect("scripts/engine-bar/join.json"),
+        )
+        .unwrap();
+        let sql = job["sql"].as_str().expect("join.json sql").to_string();
+        let parent = tempfile::tempdir().unwrap();
+        let scratch = Scratch::create(parent.path(), "engine-bar").unwrap();
+        let staged = scratch
+            .stage_inputs(&[
+                Input {
+                    name: "customers".into(),
+                    path: bar.join("customers.csv"),
+                },
+                Input {
+                    name: "orders".into(),
+                    path: bar.join("orders.csv"),
+                },
+            ])
+            .unwrap();
+        write_manifest(scratch.path(), &sql, &staged).unwrap();
+        let version = execute_in_scratch(scratch.path()).unwrap();
+        assert!(version.starts_with("duckdb "), "{version}");
+        let csv = fs::read_to_string(scratch.outputs_dir().join("totals.csv")).unwrap();
+        assert!(csv.contains("customer_id"), "{csv}");
+        assert!(csv.contains('a'), "{csv}");
+        assert!(csv.contains('b'), "{csv}");
+        assert!(
+            csv.contains("25") || csv.contains("25.0"),
+            "expected aggregate 25, got {csv}"
+        );
+        assert!(csv.contains('7'), "expected aggregate 7, got {csv}");
+    }
+
     #[test]
     fn user_sql_cannot_read_outside_scratch() {
         let parent = tempfile::tempdir().unwrap();
