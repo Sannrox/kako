@@ -11,3 +11,15 @@ categories = ["command-line-utilities", "database"]
 homepage = "https://github.com/Sannrox/kako"
 
 [dependencies]
+duckdb = { version = "=1.10506.0", features = ["bundled", "parquet"] }
+kekkai = { git = "https://github.com/Sannrox/kekkai", rev = "7709d8a179ba499d319f5607dfbef0d68b869fef" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"

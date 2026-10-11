@@ -3,12 +3,18 @@
 //! kako takes a transform job (SQL or Python plus input datasets) from a
 //! pluggable [`JobSource`], runs it in a sandboxed child process, and hands the
 //! outputs and a [`Receipt`] back to the source.
-//!
-//! This is a skeleton: it defines the core vocabulary only. See
-//! `docs/decisions/0002-sandboxed-transform-runner.md`.
 
+use std::fmt;
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
+
+pub mod digest;
+pub mod engine;
+pub mod local;
+pub mod receipt;
+pub mod run;
+pub mod sandbox;
+pub mod stage;
 
 /// A content digest, written as `<algorithm>:<hex>` (for example SHA-256).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -41,6 +47,8 @@ pub struct Job {
     pub inputs: Vec<Input>,
     /// Names of the outputs the job is expected to produce.
     pub outputs: Vec<String>,
+    /// Hard wall-clock timeout for the sandboxed child.
+    pub wall_clock: Duration,
 }
 
 /// One produced output file.
@@ -74,6 +82,16 @@ pub enum Failure {
     Limit(String),
     /// The runner itself could not run the job.
     Runner(String),
+}
+
+impl fmt::Display for Failure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Job(message) => write!(f, "job: {message}"),
+            Self::Limit(message) => write!(f, "limit: {message}"),
+            Self::Runner(message) => write!(f, "runner: {message}"),
+        }
+    }
 }
 
 /// Where jobs come from and where results go.
