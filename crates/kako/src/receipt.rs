@@ -23,6 +23,10 @@ struct FileReceipt<'a> {
     started_at_unix_ms: u64,
     duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    cpu_usec: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory_peak_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     lineage: Option<&'a Lineage>,
 }
 
@@ -52,6 +56,8 @@ pub fn to_json(receipt: &Receipt) -> Result<String, String> {
             .collect(),
         started_at_unix_ms,
         duration_ms: receipt.duration.as_millis() as u64,
+        cpu_usec: receipt.cpu_usec,
+        memory_peak_bytes: receipt.memory_peak_bytes,
         lineage: receipt.lineage.as_ref(),
     };
     let mut json = serde_json::to_string_pretty(&body)
@@ -78,6 +84,8 @@ mod tests {
             outputs: vec![("out.csv".into(), Digest("sha256:cc".into()))],
             started_at: SystemTime::UNIX_EPOCH + Duration::from_millis(1_700_000_000_000),
             duration: Duration::from_millis(42),
+            cpu_usec: None,
+            memory_peak_bytes: None,
             lineage: None,
         };
         let json = to_json(&receipt).unwrap();
@@ -92,6 +100,30 @@ mod tests {
         assert_eq!(v["outputs"]["out.csv"], "sha256:cc");
         assert_eq!(v["started_at_unix_ms"], 1_700_000_000_000_u64);
         assert_eq!(v["duration_ms"], 42);
+        assert!(v.get("cpu_usec").is_none(), "{json}");
+        assert!(v.get("memory_peak_bytes").is_none(), "{json}");
         assert!(v.get("lineage").is_none(), "{json}");
+    }
+
+    #[test]
+    fn json_echoes_measured_usage() {
+        let receipt = Receipt {
+            job_id: "j1".into(),
+            tenant_id: "t".into(),
+            namespace: "ns".into(),
+            inputs: vec![],
+            code: Digest("sha256:bb".into()),
+            engine_version: "duckdb 1.4.5".into(),
+            outputs: vec![],
+            started_at: SystemTime::UNIX_EPOCH,
+            duration: Duration::from_millis(1),
+            cpu_usec: Some(12_345),
+            memory_peak_bytes: Some(4_096),
+            lineage: None,
+        };
+        let json = to_json(&receipt).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["cpu_usec"], 12_345);
+        assert_eq!(v["memory_peak_bytes"], 4_096);
     }
 }

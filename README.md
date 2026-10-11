@@ -67,6 +67,13 @@ local CLI fills `local` / `default` when the job file omits them, or the
 values from `--tenant` / `--namespace`. `--require-identity` is the
 multi-tenant mode: both fields must be present on the job file.
 
+The job source owns queueing, quotas, and fair share
+([ADR 0004](docs/decisions/0004-quota-authority.md)). kako enforces the
+per-run `timeout_ms`, optional `cpu_time_secs`, and optional `memory_bytes`
+it is given. A memory cap fails closed when the host cannot apply a
+cgroup. Receipts record measured `cpu_usec` and `memory_peak_bytes` when
+the sandbox reports them.
+
 ## Engines
 
 - **SQL via DuckDB** first (default).
@@ -96,6 +103,7 @@ to retry; kako only executes.
 Every run produces a receipt with:
 
 - `tenant_id` and `namespace`;
+- measured `cpu_usec` and `memory_peak_bytes` when the sandbox reports them;
 - the digest of each input;
 - the digest of the code;
 - the engine and its version;

@@ -284,11 +284,12 @@ fn network_from_the_child_is_denied_on_linux_native() {
     let mut cmd = Command::new(worker());
     cmd.arg("--internal-probe").arg("network");
     let worker = worker();
-    let (status, _, stderr) = sandbox::run_sandboxed(
+    let (status, _, stderr, _) = sandbox::run_sandboxed(
         cmd,
         scratch.path(),
         backend,
         Duration::from_secs(10),
+        None,
         None,
         &worker,
     )
