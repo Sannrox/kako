@@ -6,14 +6,14 @@ use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use kekkai::{Backend, Health, Limits, Network, Sandbox, Settings};
+use kekkai::{Backend, CgroupLimits, ChildUsage, Health, Limits, Network, Sandbox, Settings};
 
 use crate::Failure;
 
 /// Backend used for `kako run`. Only `linux_native` confines writes and
 /// denies network; anything weaker is a runner failure.
 pub fn select_backend() -> Result<Backend, Failure> {
-    let linux = settings(Backend::LinuxNative, None, extra_readable_roots(None));
+    let linux = settings(Backend::LinuxNative, None, None, extra_readable_roots(None));
     match kekkai::health(&linux) {
         Health::Ok(_) => Ok(Backend::LinuxNative),
         Health::Warning(message) | Health::Error(message) => Err(Failure::Runner(format!(
@@ -33,9 +33,10 @@ pub fn doctor_report() -> String {
     let linux = kekkai::health(&settings(
         Backend::LinuxNative,
         None,
+        None,
         extra_readable_roots(None),
     ));
-    let rlimit = kekkai::health(&settings(Backend::Rlimit, None, Vec::new()));
+    let rlimit = kekkai::health(&settings(Backend::Rlimit, None, None, Vec::new()));
     format!(
         "kako doctor\n\
          backend_selected: {selected}\n\
@@ -80,6 +81,7 @@ fn health_line(health: &Health) -> String {
 fn settings(
     backend: Backend,
     cpu_time_secs: Option<u64>,
+    memory_bytes: Option<u64>,
     readable_roots: Vec<PathBuf>,
 ) -> Settings {
     Settings {
@@ -95,7 +97,10 @@ fn settings(
         readable_roots,
         writable_roots: Vec::new(),
         network: Network::Deny,
-        cgroup: kekkai::CgroupLimits::default(),
+        cgroup: CgroupLimits {
+            memory_max: memory_bytes,
+            ..CgroupLimits::default()
+        },
         cgroup_root: None,
     }
 }
@@ -165,8 +170,9 @@ pub fn run_sandboxed(
     backend: Backend,
     wall_clock: Duration,
     cpu_time_secs: Option<u64>,
+    memory_bytes: Option<u64>,
     worker: &Path,
-) -> Result<(ExitStatus, Vec<u8>, Vec<u8>), Failure> {
+) -> Result<(ExitStatus, Vec<u8>, Vec<u8>, ChildUsage), Failure> {
     let deadline = Instant::now()
         .checked_add(wall_clock)
         .ok_or_else(|| Failure::Runner("wall-clock timeout overflows the runner clock".into()))?;
@@ -175,7 +181,14 @@ pub fn run_sandboxed(
     } else {
         Vec::new()
     };
-    let prepared = settings(backend, cpu_time_secs, readable);
+    let prepared = settings(backend, cpu_time_secs, memory_bytes, readable);
+    if memory_bytes.is_some()
+        && let Health::Error(message) = kekkai::health(&prepared)
+    {
+        return Err(Failure::Runner(format!(
+            "memory limit cannot be set: {message}"
+        )));
+    }
     let sandbox = Sandbox::prepare(&prepared, scratch)
         .map_err(|error| Failure::Runner(format!("sandbox cannot be applied: {error}")))?;
     sandbox
@@ -236,10 +249,10 @@ pub fn run_sandboxed(
             }
         }
     };
-    let _ = sandbox.finish();
+    let usage = sandbox.finish();
     let stdout = stdout_thread.join().unwrap_or_default();
     let stderr = stderr_thread.join().unwrap_or_default();
-    Ok((status, stdout, stderr))
+    Ok((status, stdout, stderr, usage))
 }
 
 /// Exit code for `--internal-probe network`: 0 allowed, 2 denied, 1 other error.
@@ -345,6 +358,7 @@ mod tests {
             Backend::Rlimit,
             Duration::from_millis(400),
             None,
+            None,
             Path::new("/bin/sleep"),
         )
         .unwrap_err();
@@ -364,11 +378,36 @@ mod tests {
             Backend::Rlimit,
             Duration::MAX,
             None,
+            None,
             Path::new("/bin/true"),
         )
         .unwrap_err();
         assert!(
             matches!(error, Failure::Runner(ref message) if message.contains("overflows")),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn memory_limit_fails_closed_when_cgroup_unavailable() {
+        let scratch = tempfile::tempdir().unwrap();
+        let prepared = settings(Backend::Rlimit, None, Some(1024 * 1024), Vec::new());
+        if matches!(kekkai::health(&prepared), Health::Ok(_)) {
+            return;
+        }
+        let command = Command::new("true");
+        let error = run_sandboxed(
+            command,
+            scratch.path(),
+            Backend::Rlimit,
+            Duration::from_secs(1),
+            None,
+            Some(1024 * 1024),
+            Path::new("/bin/true"),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Failure::Runner(ref message) if message.contains("memory limit")),
             "{error}"
         );
     }

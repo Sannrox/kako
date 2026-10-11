@@ -43,6 +43,8 @@ struct JobFile {
     inputs: HashMap<String, String>,
     outputs: Vec<String>,
     timeout_ms: Option<u64>,
+    cpu_time_secs: Option<u64>,
+    memory_bytes: Option<u64>,
     tenant_id: Option<String>,
     namespace: Option<String>,
 }
@@ -282,6 +284,14 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
     if wall_clock.is_zero() {
         return Err(LocalError("timeout_ms must be greater than zero".into()));
     }
+    let cpu_time = match parsed.cpu_time_secs {
+        Some(0) => return Err(LocalError("cpu_time_secs must be greater than zero".into())),
+        Some(secs) => Some(Duration::from_secs(secs)),
+        None => None,
+    };
+    if parsed.memory_bytes == Some(0) {
+        return Err(LocalError("memory_bytes must be greater than zero".into()));
+    }
     Ok(Job {
         id,
         engine,
@@ -289,6 +299,8 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
         inputs,
         outputs: parsed.outputs,
         wall_clock,
+        cpu_time,
+        memory_bytes: parsed.memory_bytes,
         tenant_id,
         namespace,
     })
@@ -357,6 +369,8 @@ mod tests {
         assert_eq!(job.wall_clock, Duration::from_millis(5000));
         assert_eq!(job.tenant_id, "local");
         assert_eq!(job.namespace, "default");
+        assert_eq!(job.cpu_time, None);
+        assert_eq!(job.memory_bytes, None);
         let key = QuotaKey::from_job(&job).unwrap();
         assert_eq!(key.tenant_id, "local");
         assert_eq!(key.namespace, "default");
@@ -379,6 +393,27 @@ mod tests {
         .unwrap();
         let job = load_job(&job_path).unwrap();
         assert_eq!(job.engine, Engine::Mizuchi);
+    }
+
+    #[test]
+    fn load_job_reads_per_run_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.csv"), "a\n1\n").unwrap();
+        let job_path = dir.path().join("job.json");
+        fs::write(
+            &job_path,
+            r#"{
+              "sql": "SELECT 1",
+              "inputs": {"in": "in.csv"},
+              "outputs": ["out.csv"],
+              "cpu_time_secs": 2,
+              "memory_bytes": 1048576
+            }"#,
+        )
+        .unwrap();
+        let job = load_job(&job_path).unwrap();
+        assert_eq!(job.cpu_time, Some(Duration::from_secs(2)));
+        assert_eq!(job.memory_bytes, Some(1_048_576));
     }
 
     #[test]
@@ -477,6 +512,8 @@ mod tests {
             inputs: vec![],
             outputs: vec!["nested/out.csv".into()],
             wall_clock: Duration::from_secs(1),
+            cpu_time: None,
+            memory_bytes: None,
             tenant_id: "local".into(),
             namespace: "default".into(),
         };
@@ -495,6 +532,8 @@ mod tests {
             duration: Duration::from_millis(1),
             tenant_id: "local".into(),
             namespace: "default".into(),
+            cpu_usec: None,
+            memory_peak_bytes: None,
             lineage: None,
         };
         let err = source.complete(&job, &outputs, &receipt).unwrap_err();
@@ -593,6 +632,8 @@ mod tests {
             duration: Duration::from_millis(1),
             tenant_id: job.tenant_id.clone(),
             namespace: job.namespace.clone(),
+            cpu_usec: None,
+            memory_peak_bytes: None,
             lineage: None,
         };
         source.complete(&job, &outputs, &receipt).unwrap();

@@ -29,3 +29,7 @@ uses [Semantic Versioning](https://semver.org/).
 - Jobs, receipts, and quota keys carry `tenant_id` and `namespace`. Receipt
   JSON is `receipt_version` 2. The local CLI fills `local` / `default`
   unless `--require-identity` is set.
+- Per-run optional `cpu_time` and `memory_bytes` on jobs. The job source
+  owns quotas and fair share ([ADR 0004](docs/decisions/0004-quota-authority.md));
+  kako enforces the limits it is handed. Receipts include `cpu_usec` and
+  `memory_peak_bytes` when the sandbox reports them.

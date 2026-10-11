@@ -99,26 +99,20 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
         .map_err(Failure::Runner)?;
 
     let backend = sandbox::select_backend()?;
-    // CPU ceiling sits above the wall clock so the hard timeout wins.
-    let cpu_time_secs = Some(job.wall_clock.as_secs().saturating_mul(2).max(2));
+    let cpu_time_secs = Some(cpu_limit_secs(job)?);
     let mut command = Command::new(&config.worker);
     command.arg("--internal-execute").arg(scratch.path());
-    let (status, stdout, stderr) = sandbox::run_sandboxed(
+    let (status, stdout, stderr, usage) = sandbox::run_sandboxed(
         command,
         scratch.path(),
         backend,
         job.wall_clock,
         cpu_time_secs,
+        job.memory_bytes,
         &config.worker,
     )?;
-    if !status.success() {
-        let err = String::from_utf8_lossy(&stderr);
-        let out = String::from_utf8_lossy(&stdout);
-        let body = format!("worker exited {status}: {err}{out}");
-        if status.code() == Some(3) || err.contains("limit:") || out.contains("limit:") {
-            return Err(Failure::Limit(body));
-        }
-        return Err(Failure::Job(body));
+    if let Some(failure) = classify_worker(status, &stdout, &stderr, usage.oom_killed) {
+        return Err(failure);
     }
     let engine_version = String::from_utf8_lossy(&stdout).trim().to_string();
     if engine_version.is_empty() {
@@ -153,6 +147,8 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
         duration: started.elapsed(),
         tenant_id: job.tenant_id.clone(),
         namespace: job.namespace.clone(),
+        cpu_usec: usage.cpu_usec,
+        memory_peak_bytes: usage.memory_peak_bytes,
         lineage,
     };
     Ok(CompletedRun {
@@ -178,6 +174,64 @@ fn load_lineage(
 
 /// Default wall-clock timeout when a job file omits `timeout_ms`.
 pub const DEFAULT_WALL_CLOCK: Duration = Duration::from_secs(60);
+
+/// Integer seconds for `RLIMIT_CPU`. The sandbox API is whole seconds.
+fn cpu_limit_secs(job: &Job) -> Result<u64, Failure> {
+    let cpu = match job.cpu_time {
+        Some(cpu) if cpu.subsec_nanos() != 0 => {
+            return Err(Failure::Runner(
+                "cpu_time must be a whole number of seconds".into(),
+            ));
+        }
+        Some(cpu) => cpu,
+        None => job.wall_clock.saturating_mul(2),
+    };
+    Ok(cpu.as_secs().max(1))
+}
+
+fn classify_worker(
+    status: std::process::ExitStatus,
+    stdout: &[u8],
+    stderr: &[u8],
+    oom_killed: bool,
+) -> Option<Failure> {
+    let err = String::from_utf8_lossy(stderr);
+    let out = String::from_utf8_lossy(stdout);
+    if oom_killed {
+        return Some(Failure::Limit(format!(
+            "memory: cgroup oom: worker exited {status}: {err}{out}"
+        )));
+    }
+    if resource_limit_signal(status) {
+        return Some(Failure::Limit(format!(
+            "limit: worker exited {status}: {err}{out}"
+        )));
+    }
+    if status.success() {
+        return None;
+    }
+    let body = format!("worker exited {status}: {err}{out}");
+    if status.code() == Some(3) || err.contains("limit:") || out.contains("limit:") {
+        Some(Failure::Limit(body))
+    } else {
+        Some(Failure::Job(body))
+    }
+}
+
+/// kekkai sets `RLIMIT_CPU` soft and hard to the same value, so a CPU cap
+/// on Linux is SIGKILL. SIGXCPU is the soft-limit signal when they differ.
+fn resource_limit_signal(status: std::process::ExitStatus) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        matches!(status.signal(), Some(libc::SIGXCPU | libc::SIGKILL))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = status;
+        false
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -235,6 +289,8 @@ mod tests {
             }],
             outputs: vec!["out.csv".into()],
             wall_clock: Duration::from_secs(5),
+            cpu_time: None,
+            memory_bytes: None,
             tenant_id: "local".into(),
             namespace: "default".into(),
         };
@@ -270,6 +326,8 @@ mod tests {
             inputs: vec![],
             outputs: vec!["out.csv".into()],
             wall_clock: Duration::from_secs(5),
+            cpu_time: None,
+            memory_bytes: None,
             tenant_id: String::new(),
             namespace: "default".into(),
         };
@@ -304,6 +362,8 @@ mod tests {
             inputs: vec![],
             outputs: vec!["out.csv".into()],
             wall_clock: Duration::from_secs(5),
+            cpu_time: None,
+            memory_bytes: None,
             tenant_id: "local".into(),
             namespace: "default".into(),
         };
@@ -339,5 +399,151 @@ mod tests {
         assert_eq!(load_lineage(Engine::DuckDbSql, dir.path()).unwrap(), None);
         let lineage = load_lineage(Engine::Mizuchi, dir.path()).unwrap().unwrap();
         assert_eq!(lineage.plan, "planted");
+    }
+
+    fn sample_job(id: &str, tenant: &str) -> Job {
+        Job {
+            id: id.into(),
+            engine: Engine::DuckDbSql,
+            code: "SELECT 1".into(),
+            inputs: vec![],
+            outputs: vec!["out.csv".into()],
+            wall_clock: Duration::from_secs(5),
+            cpu_time: None,
+            memory_bytes: None,
+            tenant_id: tenant.into(),
+            namespace: "default".into(),
+        }
+    }
+
+    /// Round-robin by quota key so one owner's flood cannot occupy every slot.
+    struct FairSource {
+        by_owner: std::collections::BTreeMap<crate::QuotaKey, std::collections::VecDeque<Job>>,
+        order: Vec<crate::QuotaKey>,
+        cursor: usize,
+        started: Vec<String>,
+    }
+
+    impl FairSource {
+        fn new(jobs: impl IntoIterator<Item = Job>) -> Self {
+            let mut source = Self {
+                by_owner: std::collections::BTreeMap::new(),
+                order: Vec::new(),
+                cursor: 0,
+                started: Vec::new(),
+            };
+            for job in jobs {
+                let key = crate::QuotaKey::from_job(&job).unwrap();
+                if !source.by_owner.contains_key(&key) {
+                    source.order.push(key.clone());
+                }
+                source.by_owner.entry(key).or_default().push_back(job);
+            }
+            source
+        }
+    }
+
+    impl JobSource for FairSource {
+        type Error = FakeErr;
+        fn next_job(&mut self) -> Result<Option<Job>, Self::Error> {
+            if self.order.is_empty() {
+                return Ok(None);
+            }
+            for _ in 0..self.order.len() {
+                let i = self.cursor % self.order.len();
+                self.cursor += 1;
+                let key = &self.order[i];
+                if let Some(job) = self
+                    .by_owner
+                    .get_mut(key)
+                    .and_then(std::collections::VecDeque::pop_front)
+                {
+                    self.started.push(job.tenant_id.clone());
+                    return Ok(Some(job));
+                }
+            }
+            Ok(None)
+        }
+        fn complete(
+            &mut self,
+            _: &Job,
+            _: &[crate::Output],
+            _: &Receipt,
+        ) -> Result<(), Self::Error> {
+            Ok(())
+        }
+        fn fail(&mut self, _: &Job, _: &Failure) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn cpu_limit_secs_rejects_fractional_seconds() {
+        let mut job = sample_job("c", "t");
+        job.cpu_time = Some(Duration::from_millis(1500));
+        let err = cpu_limit_secs(&job).unwrap_err();
+        assert!(
+            matches!(err, Failure::Runner(ref message) if message.contains("whole number")),
+            "{err}"
+        );
+        job.cpu_time = Some(Duration::from_secs(3));
+        assert_eq!(cpu_limit_secs(&job).unwrap(), 3);
+        job.cpu_time = None;
+        job.wall_clock = Duration::from_millis(500);
+        assert_eq!(cpu_limit_secs(&job).unwrap(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cpu_rlimit_signals_are_limit_failures() {
+        for sig in ["XCPU", "KILL"] {
+            let status = Command::new("sh")
+                .args(["-c", &format!("kill -s {sig} $$")])
+                .status()
+                .unwrap();
+            let failure = classify_worker(status, b"", b"", false).unwrap();
+            assert!(
+                matches!(failure, Failure::Limit(ref message) if message.contains("limit:")),
+                "{sig}: {failure}"
+            );
+        }
+    }
+
+    #[test]
+    fn cgroup_oom_is_a_limit_failure() {
+        let status = Command::new("true").status().unwrap();
+        let failure = classify_worker(status, b"", b"", true).unwrap();
+        assert!(
+            matches!(failure, Failure::Limit(ref message) if message.contains("oom")),
+            "{failure}"
+        );
+    }
+
+    #[test]
+    fn fair_source_starts_a_second_owner_before_the_flood_drains() {
+        let mut jobs = Vec::new();
+        for i in 0..20 {
+            jobs.push(sample_job(&format!("a{i}"), "alpha"));
+        }
+        jobs.push(sample_job("b0", "beta"));
+        let mut source = FairSource::new(jobs);
+        let mut seen_beta = false;
+        for _ in 0..3 {
+            let job = source.next_job().unwrap().expect("queued job");
+            if job.tenant_id == "beta" {
+                seen_beta = true;
+                break;
+            }
+        }
+        assert!(
+            seen_beta,
+            "beta must start within three pulls, started {:?}",
+            source.started
+        );
+        assert!(
+            source.started.iter().any(|t| t == "beta"),
+            "{:?}",
+            source.started
+        );
     }
 }

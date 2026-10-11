@@ -7,5 +7,6 @@ Decisions that must outlive a single PR.
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted |
 | [0002](0002-sandboxed-transform-runner.md) | kako is a sandboxed transform runner with pluggable job sources | Accepted |
 | [0003](0003-engine-opt-in-bar.md) | New engines are opt-in behind a published bar | Accepted |
+| [0004](0004-quota-authority.md) | Job source owns quotas; kako enforces per-run limits | Accepted |
 
 Template: short context, decision, consequences, rejected alternatives.

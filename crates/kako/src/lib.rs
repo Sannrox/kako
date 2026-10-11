@@ -52,6 +52,10 @@ pub struct Job {
     pub outputs: Vec<String>,
     /// Hard wall-clock timeout for the sandboxed child.
     pub wall_clock: Duration,
+    /// Optional CPU ceiling for the sandboxed child (`RLIMIT_CPU`, whole seconds).
+    pub cpu_time: Option<Duration>,
+    /// Optional cgroup memory cap in bytes. Fail closed when it cannot be set.
+    pub memory_bytes: Option<u64>,
     /// Tenant that owns this job. Required; the local source fills a default.
     pub tenant_id: String,
     /// Namespace inside the tenant. Required; the local source fills a default.
@@ -59,7 +63,7 @@ pub struct Job {
 }
 
 /// Key for quotas, claims, and receipts: `(tenant_id, namespace)`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct QuotaKey {
     pub tenant_id: String,
     pub namespace: String,
@@ -108,6 +112,10 @@ pub struct Receipt {
     pub duration: Duration,
     pub tenant_id: String,
     pub namespace: String,
+    /// Measured CPU time from the sandbox, when reported.
+    pub cpu_usec: Option<u64>,
+    /// Peak memory from the sandbox cgroup, when reported.
+    pub memory_peak_bytes: Option<u64>,
     /// Engine-reported reads, writes, and plan. Present for mizuchi; omitted
     /// from DuckDB receipts so v1 JSON for the default engine stays the same.
     pub lineage: Option<Lineage>,
