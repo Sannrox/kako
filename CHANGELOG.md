@@ -15,6 +15,11 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- CI sets `KAKO_REQUIRE_PYTHON=1` so Python engine tests cannot skip,
+  delegates a cgroup v2 subtree for `memory_bytes` jobs, and builds the
+  Python runtime image twice then runs the Polars and pandas joins inside
+  it (`scripts/python-runtime-ci.sh`).
+
 - Isolation is a job-source floor (`isolation` on the job, recorded on the
   receipt). Omitted jobs stay `linux_native`. A stronger floor the host
   cannot meet is a runner failure, with no silent downgrade

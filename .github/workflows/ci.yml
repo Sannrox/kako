@@ -31,7 +31,17 @@ jobs:
       - name: Build
         run: cargo build --locked --workspace --all-targets
       - name: Test
-        run: cargo test --locked --workspace
+        env:
+          KAKO_REQUIRE_PYTHON: "1"
+        run: bash scripts/ci-cgroup-delegate.sh cargo test --locked --workspace
+
+  python-runtime-image:
+    name: Python runtime image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build image twice and run joins inside it
+        run: bash scripts/python-runtime-ci.sh
 
   fmt:
     name: Rustfmt

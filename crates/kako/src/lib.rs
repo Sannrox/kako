@@ -24,6 +24,11 @@ pub mod stage;
 
 pub use isolation::IsolationTier;
 
+/// When `KAKO_REQUIRE_PYTHON=1`, Python engine tests must run instead of skip.
+pub fn python_tests_required() -> bool {
+    engine_python::python_tests_required()
+}
+
 /// A content digest, written as `<algorithm>:<hex>` (for example SHA-256).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Digest(pub String);

@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use kako::Failure;
 use kako::local::LocalSource;
+use kako::python_tests_required;
 use kako::run::{JobFinish, RunnerConfig, run_source};
 use kako::sandbox;
 
@@ -449,6 +450,21 @@ fn successful_run_leaves_no_scratch() {
     assert!(out.join("receipt.json").is_file());
 }
 
+fn skip_python(reason: &str) {
+    if python_tests_required() {
+        panic!("python test required (KAKO_REQUIRE_PYTHON=1): {reason}");
+    }
+    eprintln!("skip: {reason}");
+}
+
+fn require_linux_native_for_python() -> bool {
+    if linux_native_ready() {
+        return true;
+    }
+    skip_python("sandboxed python run needs linux_native");
+    false
+}
+
 fn python_runtime_available() -> bool {
     let venv = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../runtime/python/.venv/bin/python");
@@ -496,11 +512,11 @@ fn assert_join_csv(csv: &str) {
 
 #[test]
 fn cli_python_polars_join() {
-    if !linux_native_ready() {
+    if !require_linux_native_for_python() {
         return;
     }
     if !python_runtime_available() {
-        eprintln!("skip: python runtime with polars is unavailable");
+        skip_python("python runtime with polars is unavailable");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -536,11 +552,11 @@ fn cli_python_polars_join() {
 
 #[test]
 fn cli_python_pandas_join() {
-    if !linux_native_ready() {
+    if !require_linux_native_for_python() {
         return;
     }
     if !python_runtime_available() {
-        eprintln!("skip: python runtime with pandas is unavailable");
+        skip_python("python runtime with pandas is unavailable");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -560,11 +576,11 @@ fn cli_python_pandas_join() {
 
 #[test]
 fn python_user_code_cannot_pip_install_or_open_sockets() {
-    if !linux_native_ready() {
+    if !require_linux_native_for_python() {
         return;
     }
     if !python_runtime_available() {
-        eprintln!("skip: python runtime unavailable");
+        skip_python("python runtime unavailable");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -619,11 +635,11 @@ def transform(inputs):
 #[cfg(target_os = "linux")]
 #[test]
 fn python_oom_is_a_limit_and_leaves_the_runner_alive() {
-    if !linux_native_ready() {
+    if !require_linux_native_for_python() {
         return;
     }
     if !python_runtime_available() {
-        eprintln!("skip: python runtime unavailable");
+        skip_python("python runtime unavailable");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -658,7 +674,7 @@ fn python_oom_is_a_limit_and_leaves_the_runner_alive() {
     let finishes = match run_source(&mut source, &config) {
         Ok(finishes) => finishes,
         Err(error) => {
-            eprintln!("skip: python oom run could not start: {error}");
+            skip_python(&format!("python oom run could not start: {error}"));
             return;
         }
     };
@@ -674,7 +690,7 @@ fn python_oom_is_a_limit_and_leaves_the_runner_alive() {
             failure: Failure::Runner(message),
             ..
         } if message.contains("memory limit") => {
-            eprintln!("skip: cgroup memory limit cannot be set: {message}");
+            skip_python(&format!("cgroup memory limit cannot be set: {message}"));
             return;
         }
         other => panic!("expected limit OOM, got {other:?}"),
@@ -698,11 +714,11 @@ fn python_oom_is_a_limit_and_leaves_the_runner_alive() {
 #[cfg(target_os = "linux")]
 #[test]
 fn python_polars_join_finishes_under_cgroup_memory() {
-    if !linux_native_ready() {
+    if !require_linux_native_for_python() {
         return;
     }
     if !python_runtime_available() {
-        eprintln!("skip: python runtime unavailable");
+        skip_python("python runtime unavailable");
         return;
     }
     let dir = tempfile::tempdir().unwrap();
@@ -722,10 +738,46 @@ fn python_polars_join_finishes_under_cgroup_memory() {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("memory limit") {
-            eprintln!("skip: cgroup memory limit cannot be set: {stderr}");
+            skip_python(&format!("cgroup memory limit cannot be set: {stderr}"));
             return;
         }
         panic!("polars join under cgroup memory failed: {stderr}");
+    }
+    let csv = fs::read_to_string(out.join("totals.csv")).unwrap();
+    assert_join_csv(&csv);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn python_pandas_join_finishes_under_cgroup_memory() {
+    if !require_linux_native_for_python() {
+        return;
+    }
+    if !python_runtime_available() {
+        skip_python("python runtime unavailable");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let job = python_join_job(dir.path(), "join_pandas.py");
+    let raw = fs::read_to_string(&job).unwrap();
+    let mut body: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    body["memory_bytes"] = serde_json::json!(256 * 1024 * 1024);
+    fs::write(&job, body.to_string()).unwrap();
+    let out = dir.path().join("out");
+    let output = Command::new(worker())
+        .arg("run")
+        .arg(&job)
+        .arg("--output")
+        .arg(&out)
+        .output()
+        .unwrap();
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("memory limit") {
+            skip_python(&format!("cgroup memory limit cannot be set: {stderr}"));
+            return;
+        }
+        panic!("pandas join under cgroup memory failed: {stderr}");
     }
     let csv = fs::read_to_string(out.join("totals.csv")).unwrap();
     assert_join_csv(&csv);
