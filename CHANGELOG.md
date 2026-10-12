@@ -15,6 +15,10 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- FairSource load test: with N owners and one flood, every other owner's
+  first job starts within N−1 slots across repeated `run_source` trials
+  ([ADR 0004](docs/decisions/0004-quota-authority.md)).
+
 - CI sets `KAKO_REQUIRE_PYTHON=1` so Python engine tests cannot skip,
   delegates a cgroup v2 subtree for `memory_bytes` jobs, and builds the
   Python runtime image twice then runs the Polars and pandas joins inside

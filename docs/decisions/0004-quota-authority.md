@@ -35,7 +35,12 @@ exits.
 
 - Adapters that see the whole queue implement fairness. `FairSource` is a
   reference round-robin adapter; it is not installed in front of other
-  sources. Tests drive it through the run loop.
+  sources. Tests drive it through the run loop. Load tests through
+  `run_source` assert the round-robin bound: with N owners and one flood,
+  every other owner's first job starts within N−1 slots of the first
+  start. Sequential `run_source` records one start per slot. Missing-input
+  jobs fail closed before the sandbox so the load test measures
+  scheduling.
 - Per-run memory limits require a delegated cgroup on the host.
 - Aggregate owner caps never live in kako: the runner has no global view.
 
