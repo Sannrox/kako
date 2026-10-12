@@ -8,8 +8,9 @@ outputs together with a receipt describing exactly what ran.
 > Python in a [kekkai](https://github.com/Sannrox/kekkai) sandbox and write
 > outputs plus a receipt. External job sources are not implemented yet.
 > See [ADR 0002](docs/decisions/0002-sandboxed-transform-runner.md),
-> [ADR 0005](docs/decisions/0005-python-runtime-image.md), and
-> [ADR 0006](docs/decisions/0006-python-package-policy.md).
+> [ADR 0005](docs/decisions/0005-python-runtime-image.md),
+> [ADR 0006](docs/decisions/0006-python-package-policy.md), and
+> [ADR 0008](docs/decisions/0008-release-artifacts.md).
 
 ## How it works
 
@@ -134,6 +135,25 @@ A receipt is enough to check what produced an output and to rerun it.
   ([ADR 0007](docs/decisions/0007-single-node-execution.md)).
 - Interactive authoring or notebooks.
 - Network access for user code.
+
+## Releases
+
+A `v*` tag runs `.github/workflows/release.yml` and publishes a GitHub
+Release: the Linux runner binary, SQL and Python runtime images, a Python
+catalog archive that unpacks into `KAKO_PYTHON_IMAGES`, `SHA256SUMS`, and
+artifact attestations. The tag version must match `Cargo.toml`. Crates stay
+unpublished while they depend on git pins
+([ADR 0008](docs/decisions/0008-release-artifacts.md)).
+
+```bash
+bash scripts/release-dry-run.sh --out dist
+bash scripts/release-dry-run.sh --out dist --with-images --with-site-packages
+```
+
+`--with-images` needs a container runtime. `--with-site-packages` installs
+the hashed lockfile into the catalog tree. `workflow_dispatch` and pull
+requests package artifacts without attesting or creating a GitHub Release.
+Attestations and the Release are tag-only (`v*`).
 
 ## Development
 
