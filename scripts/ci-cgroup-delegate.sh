@@ -61,6 +61,7 @@ for key, value in os.environ.items():
     print(f"{key}={value}")
 ' >"$env_file"
 
+# GraphQL verified-push stores blobs as 100644; invoke via bash.
 sudo systemd-run --quiet --collect --wait --pipe \
   --unit="$unit" \
   --uid="$(id -u)" --gid="$(id -g)" \
@@ -68,4 +69,4 @@ sudo systemd-run --quiet --collect --wait --pipe \
   --property=DelegateSubgroup=main \
   --property="EnvironmentFile=$env_file" \
   --working-directory="$(pwd)" \
-  "$self" --inside "$@"
+  bash "$self" --inside "$@"

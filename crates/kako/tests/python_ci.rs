@@ -30,6 +30,7 @@ fn ci_requires_python_and_builds_the_runtime_image() {
     assert!(
         cgroup.contains("systemd-run")
             && cgroup.contains("Delegate=yes")
+            && cgroup.contains("bash \"$self\"")
             && cgroup.contains("cgroup.subtree_control")
             && cgroup.contains("memory.swap.max")
             && cgroup.contains("KAKO_CGROUP_ROOT"),
