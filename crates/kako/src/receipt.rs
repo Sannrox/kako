@@ -7,8 +7,8 @@ use serde::Serialize;
 
 use crate::{Lineage, Receipt};
 
-/// Schema 2 adds required `tenant_id` and `namespace` on every receipt.
-const RECEIPT_VERSION: u32 = 2;
+/// Schema 3 adds required `isolation` (the tier that ran).
+const RECEIPT_VERSION: u32 = 3;
 
 #[derive(Serialize)]
 struct FileReceipt<'a> {
@@ -30,6 +30,7 @@ struct FileReceipt<'a> {
     lineage: Option<&'a Lineage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     runtime_image: Option<&'a str>,
+    isolation: &'a str,
 }
 
 /// Serialize a receipt as stable JSON (sorted maps, trailing newline).
@@ -62,6 +63,7 @@ pub fn to_json(receipt: &Receipt) -> Result<String, String> {
         memory_peak_bytes: receipt.memory_peak_bytes,
         lineage: receipt.lineage.as_ref(),
         runtime_image: receipt.runtime_image.as_deref(),
+        isolation: receipt.isolation.as_str(),
     };
     let mut json = serde_json::to_string_pretty(&body)
         .map_err(|error| format!("serialize receipt: {error}"))?;
@@ -91,10 +93,11 @@ mod tests {
             memory_peak_bytes: None,
             lineage: None,
             runtime_image: None,
+            isolation: crate::IsolationTier::LinuxNative,
         };
         let json = to_json(&receipt).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["receipt_version"], 2);
+        assert_eq!(v["receipt_version"], 3);
         assert_eq!(v["job_id"], "j1");
         assert_eq!(v["tenant_id"], "t");
         assert_eq!(v["namespace"], "ns");
@@ -108,6 +111,7 @@ mod tests {
         assert!(v.get("memory_peak_bytes").is_none(), "{json}");
         assert!(v.get("lineage").is_none(), "{json}");
         assert!(v.get("runtime_image").is_none(), "{json}");
+        assert_eq!(v["isolation"], "linux_native");
     }
 
     #[test]
@@ -126,11 +130,13 @@ mod tests {
             memory_peak_bytes: Some(4_096),
             lineage: None,
             runtime_image: Some("python-lockfile:sha256:aa".into()),
+            isolation: crate::IsolationTier::Userspace,
         };
         let json = to_json(&receipt).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["cpu_usec"], 12_345);
         assert_eq!(v["memory_peak_bytes"], 4_096);
         assert_eq!(v["runtime_image"], "python-lockfile:sha256:aa");
+        assert_eq!(v["isolation"], "userspace");
     }
 }

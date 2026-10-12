@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use crate::receipt;
 use crate::run::DEFAULT_WALL_CLOCK;
-use crate::{Engine, Failure, Input, Job, JobSource, Output, QuotaKey, Receipt};
+use crate::{Engine, Failure, Input, IsolationTier, Job, JobSource, Output, QuotaKey, Receipt};
 
 #[derive(Debug)]
 pub struct LocalError(pub String);
@@ -49,6 +49,7 @@ struct JobFile {
     tenant_id: Option<String>,
     namespace: Option<String>,
     runtime_image: Option<String>,
+    isolation: Option<String>,
 }
 
 /// Identity the local source applies when a job file omits tenant/namespace.
@@ -304,6 +305,10 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
         Some(id) => Some(crate::engine_python::validate_runtime_image_id(&id)?),
         None => None,
     };
+    let isolation = match parsed.isolation.as_deref() {
+        None | Some("") => IsolationTier::LinuxNative,
+        Some(value) => value.parse().map_err(LocalError)?,
+    };
     Ok(Job {
         id,
         engine,
@@ -316,6 +321,7 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
         tenant_id,
         namespace,
         runtime_image,
+        isolation,
     })
 }
 
@@ -618,6 +624,7 @@ mod tests {
             tenant_id: "local".into(),
             namespace: "default".into(),
             runtime_image: None,
+            isolation: IsolationTier::LinuxNative,
         };
         let outputs = vec![Output {
             name: "nested/out.csv".into(),
@@ -638,6 +645,7 @@ mod tests {
             memory_peak_bytes: None,
             lineage: None,
             runtime_image: None,
+            isolation: IsolationTier::LinuxNative,
         };
         let err = source.complete(&job, &outputs, &receipt).unwrap_err();
         assert!(err.0.contains("file name"), "{err}");
@@ -664,6 +672,46 @@ mod tests {
         let job = load_job(&job_path).unwrap();
         assert_eq!(job.tenant_id, "t");
         assert_eq!(job.namespace, "ns");
+        assert_eq!(job.isolation, IsolationTier::LinuxNative);
+    }
+
+    #[test]
+    fn load_job_reads_isolation_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.csv"), "a\n1\n").unwrap();
+        let job_path = dir.path().join("job.json");
+        fs::write(
+            &job_path,
+            r#"{
+              "sql": "SELECT 1",
+              "inputs": {"in": "in.csv"},
+              "outputs": ["out.csv"],
+              "isolation": "userspace"
+            }"#,
+        )
+        .unwrap();
+        let job = load_job(&job_path).unwrap();
+        assert_eq!(job.isolation, IsolationTier::Userspace);
+    }
+
+    #[test]
+    fn load_job_rejects_unknown_isolation() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.csv"), "a\n1\n").unwrap();
+        let job_path = dir.path().join("job.json");
+        fs::write(
+            &job_path,
+            r#"{
+              "sql": "SELECT 1",
+              "inputs": {"in": "in.csv"},
+              "outputs": ["out.csv"],
+              "isolation": "rlimit"
+            }"#,
+        )
+        .unwrap();
+        let err = load_job(&job_path).unwrap_err();
+        assert!(err.0.contains("isolation"), "{err}");
+        assert!(err.0.contains("rlimit"), "{err}");
     }
 
     #[test]
@@ -739,6 +787,7 @@ mod tests {
             memory_peak_bytes: None,
             lineage: None,
             runtime_image: None,
+            isolation: IsolationTier::LinuxNative,
         };
         source.complete(&job, &outputs, &receipt).unwrap();
         let json = fs::read_to_string(out.join("receipt.json")).unwrap();

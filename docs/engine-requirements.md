@@ -15,7 +15,7 @@ An engine is a worker inside the kekkai sandbox. It must:
 | Requirement | Meaning |
 | --- | --- |
 | Job I/O | Read staged inputs from the run scratch; write each named output under `outputs/`. |
-| Isolation | No network. Filesystem writes stay in the scratch tree (plus the sandbox temp dir). |
+| Isolation | No network. Filesystem writes stay in the scratch tree (plus the sandbox temp dir). The job's `isolation` floor is enforced fail-closed ([ADR 0009](decisions/0009-isolation-tier.md)). |
 | Limits | Honor the thread cap and the memory cap the runner sets. Spill to `tmp/` inside scratch, or fail as `Failure::Limit`. Do not crash the host. |
 | Cancellation | Stop work when the runner kills the process group. After that signal, the child is gone within 5 seconds. |
 | Identity | Return a stable `engine_version` string for the receipt (name and version). |

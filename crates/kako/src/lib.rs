@@ -13,6 +13,7 @@ pub mod engine;
 mod engine_mizuchi;
 mod engine_python;
 pub mod fair;
+pub mod isolation;
 pub mod local;
 pub mod receipt;
 pub mod run;
@@ -20,6 +21,8 @@ pub mod sandbox;
 #[cfg(test)]
 mod single_node_ceiling;
 pub mod stage;
+
+pub use isolation::IsolationTier;
 
 /// A content digest, written as `<algorithm>:<hex>` (for example SHA-256).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -67,6 +70,8 @@ pub struct Job {
     /// Pin of the Python runtime image (`python-lockfile:sha256:…`). SQL
     /// jobs leave this unset; unpinned Python jobs use the catalog default.
     pub runtime_image: Option<String>,
+    /// Minimum isolation the run must enforce. Omitted jobs are `linux_native`.
+    pub isolation: IsolationTier,
 }
 
 /// Key for quotas, claims, and receipts: `(tenant_id, namespace)`.
@@ -129,6 +134,8 @@ pub struct Receipt {
     /// Baked runtime identity for Python jobs (`python-lockfile:sha256:…`).
     /// Omitted from SQL receipts.
     pub runtime_image: Option<String>,
+    /// Isolation tier that actually ran.
+    pub isolation: IsolationTier,
 }
 
 /// Stable record of what one run read and wrote, for receipts.

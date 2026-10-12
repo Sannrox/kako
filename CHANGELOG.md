@@ -8,6 +8,12 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Isolation is a job-source floor (`isolation` on the job, recorded on the
+  receipt). Omitted jobs stay `linux_native`. A stronger floor the host
+  cannot meet is a runner failure, with no silent downgrade
+  ([ADR 0009](docs/decisions/0009-isolation-tier.md)). Receipt JSON is
+  `receipt_version` 3.
+
 - Tagged GitHub releases package the runner binary, SQL and Python runtime
   images, checksums, and artifact attestations. Crates stay unpublished
   while git pins remain

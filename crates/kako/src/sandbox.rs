@@ -9,16 +9,40 @@ use std::time::{Duration, Instant};
 use kekkai::{Backend, CgroupLimits, ChildUsage, Health, Limits, Network, Sandbox, Settings};
 
 use crate::Failure;
+use crate::isolation::{self, IsolationTier};
 
-/// Backend used for `kako run`. Only `linux_native` confines writes and
-/// denies network; anything weaker is a runner failure.
+/// Backend used for a job that omitted `isolation` (the `linux_native` floor).
 pub fn select_backend() -> Result<Backend, Failure> {
+    select_backend_for(IsolationTier::LinuxNative).map(|(_, backend)| backend)
+}
+
+/// Map a job's isolation floor onto a kekkai backend. Never returns a weaker
+/// tier than `required`.
+///
+/// This pin only health-checks `linux_native`. `userspace` and `kvm` stay
+/// runner failures until the guest pin (Issue #33) and spawn (Issue #3).
+pub fn select_backend_for(required: IsolationTier) -> Result<(IsolationTier, Backend), Failure> {
     let linux = settings(Backend::LinuxNative, None, None, extra_readable_roots(&[]));
-    match kekkai::health(&linux) {
-        Health::Ok(_) => Ok(Backend::LinuxNative),
-        Health::Warning(message) | Health::Error(message) => Err(Failure::Runner(format!(
-            "sandbox backend linux_native cannot be applied: {message}"
+    let linux_health = kekkai::health(&linux);
+    let mut available = Vec::new();
+    if matches!(linux_health, Health::Ok(_)) {
+        available.push(IsolationTier::LinuxNative);
+    }
+    match isolation::select_tier(required, &available) {
+        Ok(IsolationTier::LinuxNative) => Ok((IsolationTier::LinuxNative, Backend::LinuxNative)),
+        Ok(tier) => Err(Failure::Runner(format!(
+            "sandbox backend {tier} cannot be applied"
         ))),
+        Err(failure) => {
+            if required == IsolationTier::LinuxNative
+                && let Health::Warning(message) | Health::Error(message) = linux_health
+            {
+                return Err(Failure::Runner(format!(
+                    "sandbox backend linux_native cannot be applied: {message}"
+                )));
+            }
+            Err(failure)
+        }
     }
 }
 
@@ -355,6 +379,16 @@ mod tests {
                 assert!(report.contains("backend_selected: none"), "{report}");
             }
             Err(other) => panic!("unexpected doctor failure: {other}"),
+        }
+    }
+
+    #[test]
+    fn userspace_floor_does_not_select_linux_native() {
+        match select_backend_for(IsolationTier::Userspace) {
+            Err(Failure::Runner(message)) => {
+                assert!(message.contains("userspace"), "{message}");
+            }
+            other => panic!("unexpected backend {other:?}"),
         }
     }
 
