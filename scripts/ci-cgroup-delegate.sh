@@ -16,10 +16,13 @@ inside() {
     echo "ci-cgroup-delegate: $parent is not a cgroup" >&2
     exit 1
   fi
+  # systemd owns attributes on the unit cgroup. Child dirs are ours.
   echo '+memory +pids' >"$parent/cgroup.subtree_control"
-  echo 0 >"$parent/memory.swap.max"
-  export KAKO_CGROUP_ROOT="$parent"
-  echo "ci-cgroup-delegate: KAKO_CGROUP_ROOT=$parent"
+  mkdir "$parent/kako"
+  echo 0 >"$parent/kako/memory.swap.max"
+  echo '+memory +pids' >"$parent/kako/cgroup.subtree_control"
+  export KAKO_CGROUP_ROOT="$parent/kako"
+  echo "ci-cgroup-delegate: KAKO_CGROUP_ROOT=$parent/kako"
   exec "$@"
 }
 
