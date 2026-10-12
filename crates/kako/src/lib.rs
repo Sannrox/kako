@@ -6,6 +6,7 @@
 
 use std::fmt;
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::time::{Duration, SystemTime};
 
 pub mod digest;
@@ -44,6 +45,46 @@ pub enum Engine {
     Python,
 }
 
+/// How the mizuchi adapter commits a job's output. Omitted jobs overwrite.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum WriteMode {
+    /// Replace the named output.
+    #[default]
+    Overwrite,
+    /// Append onto an existing output, or create it when missing.
+    Append,
+}
+
+impl WriteMode {
+    /// Job file and lineage spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Overwrite => "overwrite",
+            Self::Append => "append",
+        }
+    }
+}
+
+impl fmt::Display for WriteMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for WriteMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "overwrite" => Ok(Self::Overwrite),
+            "append" => Ok(Self::Append),
+            other => Err(format!(
+                "unknown write_mode `{other}`: expected overwrite or append"
+            )),
+        }
+    }
+}
+
 /// One named input dataset, already available as a local file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Input {
@@ -62,6 +103,11 @@ pub struct Job {
     pub inputs: Vec<Input>,
     /// Names of the outputs the job is expected to produce.
     pub outputs: Vec<String>,
+    /// How mizuchi should commit those outputs (`overwrite` or `append`).
+    /// COPY SQL overwrites a new CSV and rejects `append`. Partitioned
+    /// parquet writes honor `append` through mizuchi. DuckDB and Python
+    /// stay overwrite.
+    pub write_mode: WriteMode,
     /// Hard wall-clock timeout for the sandboxed child.
     pub wall_clock: Duration,
     /// Optional CPU ceiling for the sandboxed child (`RLIMIT_CPU`, whole seconds).

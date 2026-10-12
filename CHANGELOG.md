@@ -15,6 +15,11 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Mizuchi jobs pass `write_mode` (`overwrite` or `append`) through to the
+  adapter. COPY SQL writes a new CSV and rejects `append`; partitioned
+  parquet writes honor both modes. Receipt snapshots stay identical across
+  repeated runs except timing fields.
+
 - FairSource load test: with N owners and one flood, every other owner's
   first job starts within N−1 slots across repeated `run_source` trials
   ([ADR 0004](docs/decisions/0004-quota-authority.md)).

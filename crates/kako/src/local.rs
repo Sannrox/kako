@@ -10,7 +10,9 @@ use serde::Deserialize;
 
 use crate::receipt;
 use crate::run::DEFAULT_WALL_CLOCK;
-use crate::{Engine, Failure, Input, IsolationTier, Job, JobSource, Output, QuotaKey, Receipt};
+use crate::{
+    Engine, Failure, Input, IsolationTier, Job, JobSource, Output, QuotaKey, Receipt, WriteMode,
+};
 
 #[derive(Debug)]
 pub struct LocalError(pub String);
@@ -50,6 +52,7 @@ struct JobFile {
     namespace: Option<String>,
     runtime_image: Option<String>,
     isolation: Option<String>,
+    write_mode: Option<String>,
 }
 
 /// Identity the local source applies when a job file omits tenant/namespace.
@@ -309,12 +312,22 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
         None | Some("") => IsolationTier::LinuxNative,
         Some(value) => value.parse().map_err(LocalError)?,
     };
+    let write_mode = match parsed.write_mode.as_deref() {
+        None | Some("") => WriteMode::Overwrite,
+        Some(value) => value.parse().map_err(LocalError)?,
+    };
+    if write_mode != WriteMode::Overwrite && engine != Engine::Mizuchi {
+        return Err(LocalError(
+            "write_mode is only valid for mizuchi jobs".into(),
+        ));
+    }
     Ok(Job {
         id,
         engine,
         code,
         inputs,
         outputs: parsed.outputs,
+        write_mode,
         wall_clock,
         cpu_time,
         memory_bytes: parsed.memory_bytes,
@@ -624,6 +637,7 @@ mod tests {
             tenant_id: "local".into(),
             namespace: "default".into(),
             runtime_image: None,
+            write_mode: WriteMode::Overwrite,
             isolation: IsolationTier::LinuxNative,
         };
         let outputs = vec![Output {
@@ -692,6 +706,85 @@ mod tests {
         .unwrap();
         let job = load_job(&job_path).unwrap();
         assert_eq!(job.isolation, IsolationTier::Userspace);
+    }
+
+    #[test]
+    fn load_job_reads_mizuchi_write_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.csv"), "a\n1\n").unwrap();
+        let job_path = dir.path().join("job.json");
+        fs::write(
+            &job_path,
+            r#"{
+              "engine": "mizuchi",
+              "sql": "COPY (SELECT * FROM in) TO 'outputs/out.csv' (HEADER, DELIMITER ',');",
+              "inputs": {"in": "in.csv"},
+              "outputs": ["out.csv"],
+              "write_mode": "append"
+            }"#,
+        )
+        .unwrap();
+        let job = load_job(&job_path).unwrap();
+        assert_eq!(job.write_mode, WriteMode::Append);
+    }
+
+    #[test]
+    fn load_job_defaults_write_mode_to_overwrite() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.csv"), "a\n1\n").unwrap();
+        let job_path = dir.path().join("job.json");
+        fs::write(
+            &job_path,
+            r#"{
+              "sql": "SELECT 1",
+              "inputs": {"in": "in.csv"},
+              "outputs": ["out.csv"]
+            }"#,
+        )
+        .unwrap();
+        let job = load_job(&job_path).unwrap();
+        assert_eq!(job.write_mode, WriteMode::Overwrite);
+    }
+
+    #[test]
+    fn load_job_rejects_write_mode_on_duckdb() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.csv"), "a\n1\n").unwrap();
+        let job_path = dir.path().join("job.json");
+        fs::write(
+            &job_path,
+            r#"{
+              "sql": "SELECT 1",
+              "inputs": {"in": "in.csv"},
+              "outputs": ["out.csv"],
+              "write_mode": "append"
+            }"#,
+        )
+        .unwrap();
+        let err = load_job(&job_path).unwrap_err();
+        assert!(err.0.contains("write_mode"), "{err}");
+        assert!(err.0.contains("mizuchi"), "{err}");
+    }
+
+    #[test]
+    fn load_job_rejects_unknown_write_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.csv"), "a\n1\n").unwrap();
+        let job_path = dir.path().join("job.json");
+        fs::write(
+            &job_path,
+            r#"{
+              "engine": "mizuchi",
+              "sql": "SELECT 1",
+              "inputs": {"in": "in.csv"},
+              "outputs": ["out.csv"],
+              "write_mode": "merge"
+            }"#,
+        )
+        .unwrap();
+        let err = load_job(&job_path).unwrap_err();
+        assert!(err.0.contains("write_mode"), "{err}");
+        assert!(err.0.contains("merge"), "{err}");
     }
 
     #[test]

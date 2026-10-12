@@ -109,8 +109,15 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
         ));
     }
     let code_digest = hash_bytes(job.code.as_bytes());
-    engine::write_manifest(scratch.path(), job.engine, &job.code, &staged, &job.outputs)
-        .map_err(Failure::Runner)?;
+    engine::write_manifest_with(
+        scratch.path(),
+        job.engine,
+        &job.code,
+        &staged,
+        &job.outputs,
+        job.write_mode,
+    )
+    .map_err(Failure::Runner)?;
     if let Some(site) = python_image
         .as_ref()
         .and_then(|image| image.site_packages.as_ref())
@@ -346,6 +353,7 @@ mod tests {
             tenant_id: "local".into(),
             namespace: "default".into(),
             runtime_image: None,
+            write_mode: crate::WriteMode::Overwrite,
             isolation: crate::IsolationTier::LinuxNative,
         };
         let mut source = Fake {
@@ -388,6 +396,7 @@ mod tests {
             tenant_id: "local".into(),
             namespace: "default".into(),
             runtime_image: None,
+            write_mode: crate::WriteMode::Overwrite,
             isolation: crate::IsolationTier::Userspace,
         };
         match execute_job(
@@ -427,6 +436,7 @@ mod tests {
             tenant_id: "local".into(),
             namespace: "default".into(),
             runtime_image: Some(pin),
+            write_mode: crate::WriteMode::Overwrite,
             isolation: crate::IsolationTier::LinuxNative,
         };
         match execute_job(
@@ -459,6 +469,7 @@ mod tests {
             tenant_id: String::new(),
             namespace: "default".into(),
             runtime_image: None,
+            write_mode: crate::WriteMode::Overwrite,
             isolation: crate::IsolationTier::LinuxNative,
         };
         let mut source = Fake {
@@ -508,6 +519,7 @@ mod tests {
             tenant_id: tenant.into(),
             namespace: "default".into(),
             runtime_image: None,
+            write_mode: crate::WriteMode::Overwrite,
             isolation: crate::IsolationTier::LinuxNative,
         }
     }
@@ -530,6 +542,7 @@ mod tests {
             tenant_id: tenant.into(),
             namespace: "default".into(),
             runtime_image: None,
+            write_mode: crate::WriteMode::Overwrite,
             isolation: crate::IsolationTier::LinuxNative,
         }
     }

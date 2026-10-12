@@ -162,6 +162,7 @@ fn cli_mizuchi_join() {
     );
     assert!(v["lineage"]["plan"].as_str().is_some(), "{receipt}");
     assert!(v["lineage"]["reads"].as_array().is_some(), "{receipt}");
+    assert_eq!(v["lineage"]["writes"][0]["mode"], "overwrite", "{receipt}");
 }
 
 #[test]

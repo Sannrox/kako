@@ -91,7 +91,10 @@ the sandbox reports them.
 - **SQL via DuckDB** first (default).
 - **SQL via mizuchi** opt-in: set `"engine": "mizuchi"` on the job. Default
   jobs and tests stay on DuckDB. Mizuchi receipts add `lineage` (plan, reads,
-  writes); DuckDB receipts stay the same.
+  writes). Optional `write_mode` is `overwrite` (default) or `append`. COPY
+  SQL writes a new CSV and rejects `append`; partitioned parquet writes pass
+  the mode to mizuchi. Lineage records the mode that ran. DuckDB receipts
+  stay the same.
 - **Python** opt-in: set `"engine": "python"` and `"code"` with
   `def transform(inputs)` returning output frames. Packages (Polars, pandas,
   pyarrow, DuckDB) come from the hashed lockfile in `runtime/python/`; user
