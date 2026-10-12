@@ -18,6 +18,8 @@ struct Manifest {
     inputs: Vec<StagedInput>,
     #[serde(default)]
     outputs: Vec<String>,
+    #[serde(default)]
+    write_mode: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -34,6 +36,25 @@ pub fn write_manifest(
     inputs: &[(String, PathBuf)],
     outputs: &[String],
 ) -> Result<(), String> {
+    write_manifest_with(
+        scratch,
+        engine,
+        sql,
+        inputs,
+        outputs,
+        crate::WriteMode::Overwrite,
+    )
+}
+
+/// Write the worker manifest, including the mizuchi output commit mode.
+pub fn write_manifest_with(
+    scratch: &Path,
+    engine: crate::Engine,
+    sql: &str,
+    inputs: &[(String, PathBuf)],
+    outputs: &[String],
+    write_mode: crate::WriteMode,
+) -> Result<(), String> {
     let engine = match engine {
         crate::Engine::DuckDbSql => "duckdb_sql",
         crate::Engine::Mizuchi => "mizuchi",
@@ -46,6 +67,7 @@ pub fn write_manifest(
             serde_json::json!({ "name": name, "relative": relative.display().to_string() })
         }).collect::<Vec<_>>(),
         "outputs": outputs,
+        "write_mode": write_mode.as_str(),
     });
     fs::write(scratch.join("manifest.json"), body.to_string())
         .map_err(|error| format!("write manifest: {error}"))
@@ -79,12 +101,29 @@ fn execute_in_current_dir(scratch: &Path) -> Result<String, String> {
         fs::read_to_string("manifest.json").map_err(|error| format!("read manifest: {error}"))?;
     let manifest: Manifest =
         serde_json::from_str(&raw).map_err(|error| format!("parse manifest: {error}"))?;
+    let write_mode = manifest
+        .write_mode
+        .as_deref()
+        .unwrap_or("overwrite")
+        .parse::<crate::WriteMode>()?;
     match manifest.engine.as_deref().unwrap_or("duckdb_sql") {
-        "duckdb_sql" | "sql" => {}
+        "duckdb_sql" | "sql" => {
+            if write_mode != crate::WriteMode::Overwrite {
+                return Err("write_mode is only valid for mizuchi jobs".into());
+            }
+        }
         "mizuchi" => {
-            return crate::engine_mizuchi::execute(&manifest.sql, &manifest.inputs, scratch);
+            return crate::engine_mizuchi::execute(
+                &manifest.sql,
+                &manifest.inputs,
+                scratch,
+                write_mode,
+            );
         }
         "python" => {
+            if write_mode != crate::WriteMode::Overwrite {
+                return Err("write_mode is only valid for mizuchi jobs".into());
+            }
             return crate::engine_python::execute(
                 &manifest.sql,
                 &manifest.inputs,

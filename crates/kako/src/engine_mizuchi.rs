@@ -10,16 +10,22 @@ use mizuchi::{
 };
 
 use crate::engine::StagedInput;
-use crate::{Lineage, LineageRead, LineageWrite};
+use crate::{Lineage, LineageRead, LineageWrite, WriteMode};
 
 /// Run staged SQL through mizuchi. Returns `mizuchi <version>`.
-pub(crate) fn execute(sql: &str, inputs: &[StagedInput], scratch: &Path) -> Result<String, String> {
+pub(crate) fn execute(
+    sql: &str,
+    inputs: &[StagedInput],
+    scratch: &Path,
+    write_mode: WriteMode,
+) -> Result<String, String> {
     execute_with(
         sql,
         inputs,
         scratch,
         SessionLimits::default(),
         CancelToken::new(),
+        write_mode,
     )
 }
 
@@ -43,6 +49,7 @@ fn execute_with(
     scratch: &Path,
     limits: SessionLimits,
     cancel: CancelToken,
+    write_mode: WriteMode,
 ) -> Result<String, String> {
     let scratch_abs = scratch
         .canonicalize()
@@ -63,6 +70,9 @@ fn execute_with(
     for input in inputs {
         let path = scratch_abs.join(&input.relative);
         register_input(&mut session, &input.name, &path)?;
+    }
+    if write_mode == WriteMode::Append {
+        return Err("mizuchi COPY writes a new CSV; write_mode append is not supported".into());
     }
     let (query, dest) = copy_select_to(sql)?;
     let dest_abs = scratch_abs.join(&dest);
@@ -90,13 +100,14 @@ fn execute_with(
         .map(|meta| meta.len())
         .unwrap_or(0);
     let rel = dest.to_string_lossy().replace('\\', "/");
+    let mode = write_mode.as_str();
     lineage.writes.push(LineageWrite {
         path: rel,
         partitions: Vec::new(),
-        mode: "overwrite".into(),
+        mode: mode.into(),
         rows,
         bytes,
-        commit_id: format!("overwrite:{rows}:{bytes}:"),
+        commit_id: format!("{mode}:{rows}:{bytes}:"),
     });
     write_lineage(scratch, &lineage)?;
     Ok(format!("mizuchi {VERSION}"))
@@ -354,8 +365,15 @@ mod tests {
     use super::*;
     use crate::engine::{execute_in_scratch, write_manifest};
     use crate::stage::Scratch;
-    use crate::{Engine, Input};
+    use crate::{Engine, Input, WriteMode};
     use std::fs;
+
+    fn mizuchi_write_mode(mode: WriteMode) -> mizuchi::WriteMode {
+        match mode {
+            WriteMode::Overwrite => mizuchi::WriteMode::Overwrite,
+            WriteMode::Append => mizuchi::WriteMode::Append,
+        }
+    }
 
     fn engine_bar_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/engine-bar")
@@ -463,6 +481,96 @@ mod tests {
         )
         .unwrap();
         assert_eq!(lineage, lineage2);
+        let snap = receipt_snapshot(&lineage);
+        let snap2 = receipt_snapshot(&lineage2);
+        assert_eq!(snap, snap2);
+        assert_eq!(snap["lineage"]["writes"][0]["mode"], "overwrite");
+    }
+
+    fn receipt_snapshot(lineage: &crate::Lineage) -> serde_json::Value {
+        let receipt = crate::Receipt {
+            job_id: "snap".into(),
+            inputs: vec![],
+            code: crate::Digest("sha256:code".into()),
+            engine_version: "mizuchi test".into(),
+            outputs: vec![],
+            started_at: std::time::SystemTime::UNIX_EPOCH,
+            duration: std::time::Duration::from_millis(1),
+            tenant_id: "local".into(),
+            namespace: "default".into(),
+            cpu_usec: None,
+            memory_peak_bytes: None,
+            lineage: Some(lineage.clone()),
+            runtime_image: None,
+            isolation: crate::IsolationTier::LinuxNative,
+        };
+        let json = crate::receipt::to_json(&receipt).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let obj = value.as_object_mut().unwrap();
+        obj.remove("started_at_unix_ms");
+        obj.remove("duration_ms");
+        value
+    }
+
+    fn run_copy_with_mode(
+        scratch: &crate::stage::Scratch,
+        staged: &[(String, PathBuf)],
+        sql: &str,
+        write_mode: WriteMode,
+    ) -> crate::Lineage {
+        crate::engine::write_manifest_with(
+            scratch.path(),
+            Engine::Mizuchi,
+            sql,
+            staged,
+            &[],
+            write_mode,
+        )
+        .unwrap();
+        execute_in_scratch(scratch.path()).unwrap();
+        serde_json::from_str(&fs::read_to_string(scratch.path().join("lineage.json")).unwrap())
+            .unwrap()
+    }
+
+    #[test]
+    fn write_mode_receipts_are_stable_for_append_and_overwrite() {
+        let src = tempfile::tempdir().unwrap();
+        let input = src.path().join("in.csv");
+        fs::write(&input, "x\n1\n").unwrap();
+        let sql = "COPY (SELECT * FROM in) TO 'outputs/one.csv' (HEADER, DELIMITER ',');";
+        let parent = tempfile::tempdir().unwrap();
+        let scratch = Scratch::create(parent.path(), "mode-over").unwrap();
+        let staged = scratch
+            .stage_inputs(&[Input {
+                name: "in".into(),
+                path: input.clone(),
+            }])
+            .unwrap();
+        let first = run_copy_with_mode(&scratch, &staged, sql, WriteMode::Overwrite);
+        let parent2 = tempfile::tempdir().unwrap();
+        let scratch2 = Scratch::create(parent2.path(), "mode-over-2").unwrap();
+        let staged2 = scratch2
+            .stage_inputs(&[Input {
+                name: "in".into(),
+                path: input.clone(),
+            }])
+            .unwrap();
+        let second = run_copy_with_mode(&scratch2, &staged2, sql, WriteMode::Overwrite);
+        assert_eq!(first.writes[0].mode, "overwrite");
+        assert_eq!(receipt_snapshot(&first), receipt_snapshot(&second));
+
+        crate::engine::write_manifest_with(
+            scratch.path(),
+            Engine::Mizuchi,
+            sql,
+            &staged,
+            &[],
+            WriteMode::Append,
+        )
+        .unwrap();
+        let err = execute_in_scratch(scratch.path()).unwrap_err();
+        assert!(err.contains("append"), "{err}");
+        assert!(err.contains("COPY"), "{err}");
     }
 
     #[test]
@@ -518,6 +626,7 @@ mod tests {
             scratch.path(),
             SessionLimits::default(),
             cancel,
+            WriteMode::Overwrite,
         )
         .unwrap_err();
         assert!(
@@ -562,6 +671,7 @@ mod tests {
                 workers: 1,
             },
             CancelToken::new(),
+            WriteMode::Overwrite,
         )
         .unwrap_err();
         assert!(
@@ -619,7 +729,7 @@ mod tests {
                 &[year_batch()],
                 mizuchi::ParquetWriteOptions {
                     partition_by: &[String::from("year")],
-                    mode: mizuchi::WriteMode::Overwrite,
+                    mode: mizuchi_write_mode(WriteMode::Overwrite),
                 },
             )
             .unwrap();
@@ -661,7 +771,7 @@ mod tests {
         let batch = year_batch();
         let opts_over = mizuchi::ParquetWriteOptions {
             partition_by: &[String::from("year")],
-            mode: mizuchi::WriteMode::Overwrite,
+            mode: mizuchi_write_mode(WriteMode::Overwrite),
         };
         let first = session
             .write_parquet_reported(&dest, std::slice::from_ref(&batch), opts_over)
@@ -681,7 +791,7 @@ mod tests {
         );
         let opts_append = mizuchi::ParquetWriteOptions {
             partition_by: &[String::from("year")],
-            mode: mizuchi::WriteMode::Append,
+            mode: mizuchi_write_mode(WriteMode::Append),
         };
         let appended = session
             .write_parquet_reported(&dest, &[batch], opts_append)
@@ -689,5 +799,15 @@ mod tests {
         let mapped = lineage_from_report(&appended, &abs);
         assert_eq!(mapped.writes[0].mode, "append");
         assert_eq!(mapped.writes[0].rows, 3);
+        let overwrite_snap = receipt_snapshot(&lineage_from_report(&first, &abs));
+        let overwrite_again = receipt_snapshot(&lineage_from_report(&again, &abs));
+        assert_eq!(overwrite_snap, overwrite_again);
+        assert_eq!(overwrite_snap["lineage"]["writes"][0]["mode"], "overwrite");
+        let append_snap = receipt_snapshot(&mapped);
+        assert_eq!(append_snap["lineage"]["writes"][0]["mode"], "append");
+        assert_ne!(
+            overwrite_snap["lineage"]["writes"][0]["mode"],
+            append_snap["lineage"]["writes"][0]["mode"]
+        );
     }
 }
