@@ -8,11 +8,14 @@
 takes jobs (SQL or Python plus inputs) from a pluggable job source, stages the
 inputs into a per-run scratch directory, runs the code in a `kekkai` sandbox,
 hashes the outputs, and reports outputs and a receipt back to the source. The
-workspace has one crate today, `crates/kako` (library with the core types plus
-a thin binary). The design is proposed in
-[ADR 0002](docs/decisions/0002-sandboxed-transform-runner.md); nothing runs yet.
+workspace has crates along those boundaries ([ADR 0010](docs/decisions/0010-crate-graph.md)):
+`kako-core` (types, receipts, staging, manifest), `kako-sandbox` (kekkai),
+`kako-engine-duckdb` / `kako-engine-mizuchi` / `kako-engine-python`,
+`kako-worker` (`--internal-execute` dispatch), and `kako` (run loop, local
+source, CLI). The design is in
+[ADR 0002](docs/decisions/0002-sandboxed-transform-runner.md).
 
-Add new code along the boundaries above (job sources, staging, engines,
+Add new code along the crate boundaries above (job sources, staging, engines,
 receipts, run loop) rather than growing `main.rs`. Keep the binary thin. Do
 not commit local state (`.state/`, `.kako-state/`), scratch run directories,
 staged datasets, outputs, or generated runtime artifacts.

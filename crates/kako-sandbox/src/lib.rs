@@ -12,8 +12,25 @@ use kekkai::{
     Sandbox, Settings,
 };
 
-use crate::Failure;
-use crate::isolation::{self, IsolationTier};
+/// Resource usage kako records on a receipt. Translated from kekkai so
+/// callers do not name sandbox-crate types.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxUsage {
+    pub cpu_usec: Option<u64>,
+    pub memory_peak_bytes: Option<u64>,
+    pub oom_killed: bool,
+}
+
+fn sandbox_usage(usage: ChildUsage) -> SandboxUsage {
+    SandboxUsage {
+        cpu_usec: usage.cpu_usec,
+        memory_peak_bytes: usage.memory_peak_bytes,
+        oom_killed: usage.oom_killed,
+    }
+}
+
+use kako_core::Failure;
+use kako_core::isolation::{self, IsolationTier};
 
 /// Stdout/stderr cap for guest capture. The worker prints an engine version
 /// line; errors stay bounded so a noisy child cannot fill the parent.
@@ -26,18 +43,18 @@ const GUEST_CAPTURE: CaptureLimits = CaptureLimits {
 /// SIGTERM grace before SIGKILL on a guest wall-clock timeout.
 const GUEST_TERM_GRACE: Duration = Duration::from_secs(1);
 
-/// Backend used for a job that omitted `isolation` (the `linux_native` floor).
-pub fn select_backend() -> Result<Backend, Failure> {
-    select_backend_for(IsolationTier::LinuxNative).map(|(_, backend)| backend)
+/// Isolation used for a job that omitted `isolation` (the `linux_native` floor).
+pub fn select_backend() -> Result<IsolationTier, Failure> {
+    select_backend_for(IsolationTier::LinuxNative)
 }
 
-/// Map a job's isolation floor onto a kekkai backend. Never returns a weaker
+/// Map a job's isolation floor onto an applied tier. Never returns a weaker
 /// tier than `required`.
 ///
 /// `linux_native` and `userspace` are health-checked. `kvm` stays a runner
 /// failure until kekkai ships that adapter. A missing guest helper never
 /// becomes `linux_native`.
-pub fn select_backend_for(required: IsolationTier) -> Result<(IsolationTier, Backend), Failure> {
+pub fn select_backend_for(required: IsolationTier) -> Result<IsolationTier, Failure> {
     let linux = settings(Backend::LinuxNative, None, None, extra_readable_roots(&[]));
     let linux_health = kekkai::health(&linux);
     let userspace = settings(Backend::Userspace, None, None, Vec::new());
@@ -50,8 +67,8 @@ pub fn select_backend_for(required: IsolationTier) -> Result<(IsolationTier, Bac
         available.push(IsolationTier::Userspace);
     }
     match isolation::select_tier(required, &available) {
-        Ok(IsolationTier::LinuxNative) => Ok((IsolationTier::LinuxNative, Backend::LinuxNative)),
-        Ok(IsolationTier::Userspace) => Ok((IsolationTier::Userspace, Backend::Userspace)),
+        Ok(IsolationTier::LinuxNative) => Ok(IsolationTier::LinuxNative),
+        Ok(IsolationTier::Userspace) => Ok(IsolationTier::Userspace),
         Ok(IsolationTier::Kvm) => Err(Failure::Runner(
             "sandbox backend kvm cannot be applied".into(),
         )),
@@ -73,6 +90,34 @@ pub fn select_backend_for(required: IsolationTier) -> Result<(IsolationTier, Bac
             Err(failure)
         }
     }
+}
+
+fn backend_for(isolation: IsolationTier) -> Result<Backend, Failure> {
+    match isolation {
+        IsolationTier::LinuxNative => Ok(Backend::LinuxNative),
+        IsolationTier::Userspace => Ok(Backend::Userspace),
+        IsolationTier::Kvm => Err(Failure::Runner(
+            "sandbox backend kvm cannot be applied".into(),
+        )),
+    }
+}
+
+/// Copy the worker into scratch for `userspace`; otherwise return `worker`.
+pub fn stage_worker(
+    worker: &Path,
+    scratch: &Path,
+    isolation: IsolationTier,
+) -> Result<PathBuf, Failure> {
+    if isolation == IsolationTier::Userspace {
+        stage_guest_worker(worker, scratch)
+    } else {
+        Ok(worker.to_path_buf())
+    }
+}
+
+/// Whether the host worker binary must be Landlock-readable (`linux_native`).
+pub fn host_worker_readable(isolation: IsolationTier) -> bool {
+    isolation != IsolationTier::Userspace
 }
 
 /// Text report of host capabilities and the backend `kako run` would use.
@@ -269,6 +314,27 @@ pub(crate) fn stage_guest_worker(worker: &Path, scratch: &Path) -> Result<PathBu
 /// the workspace is the per-run scratch directory. `apply()` is invalid for
 /// `userspace`; spawn goes through the guest helper.
 pub fn run_sandboxed(
+    command: Command,
+    scratch: &Path,
+    isolation: IsolationTier,
+    wall_clock: Duration,
+    cpu_time_secs: Option<u64>,
+    memory_bytes: Option<u64>,
+    extra_readable: &[PathBuf],
+) -> Result<(ExitStatus, Vec<u8>, Vec<u8>, SandboxUsage), Failure> {
+    let backend = backend_for(isolation)?;
+    run_sandboxed_on(
+        command,
+        scratch,
+        backend,
+        wall_clock,
+        cpu_time_secs,
+        memory_bytes,
+        extra_readable,
+    )
+}
+
+fn run_sandboxed_on(
     mut command: Command,
     scratch: &Path,
     backend: Backend,
@@ -276,7 +342,7 @@ pub fn run_sandboxed(
     cpu_time_secs: Option<u64>,
     memory_bytes: Option<u64>,
     extra_readable: &[PathBuf],
-) -> Result<(ExitStatus, Vec<u8>, Vec<u8>, ChildUsage), Failure> {
+) -> Result<(ExitStatus, Vec<u8>, Vec<u8>, SandboxUsage), Failure> {
     Instant::now()
         .checked_add(wall_clock)
         .ok_or_else(|| Failure::Runner("wall-clock timeout overflows the runner clock".into()))?;
@@ -340,7 +406,7 @@ fn run_userspace(
     sandbox: Sandbox,
     mut command: Command,
     wall_clock: Duration,
-) -> Result<(ExitStatus, Vec<u8>, Vec<u8>, ChildUsage), Failure> {
+) -> Result<(ExitStatus, Vec<u8>, Vec<u8>, SandboxUsage), Failure> {
     let (status, usage, stdout, stderr) = sandbox
         .spawn_with_deadline_captured(&mut command, wall_clock, GUEST_TERM_GRACE, GUEST_CAPTURE)
         .map_err(|error| {
@@ -354,14 +420,14 @@ fn run_userspace(
             wall_clock.as_millis()
         )));
     }
-    Ok((status, stdout.bytes, stderr.bytes, usage))
+    Ok((status, stdout.bytes, stderr.bytes, sandbox_usage(usage)))
 }
 
 fn run_in_process(
     sandbox: Sandbox,
     mut command: Command,
     wall_clock: Duration,
-) -> Result<(ExitStatus, Vec<u8>, Vec<u8>, ChildUsage), Failure> {
+) -> Result<(ExitStatus, Vec<u8>, Vec<u8>, SandboxUsage), Failure> {
     let deadline = Instant::now()
         .checked_add(wall_clock)
         .ok_or_else(|| Failure::Runner("wall-clock timeout overflows the runner clock".into()))?;
@@ -420,7 +486,7 @@ fn run_in_process(
     let usage = sandbox.finish();
     let stdout = stdout_thread.join().unwrap_or_default();
     let stderr = stderr_thread.join().unwrap_or_default();
-    Ok((status, stdout, stderr, usage))
+    Ok((status, stdout, stderr, sandbox_usage(usage)))
 }
 
 /// Exit code for `--internal-probe network`: 0 allowed, 2 denied, 1 other error.
@@ -509,8 +575,8 @@ mod tests {
         assert!(report.contains("linux_native_health:"), "{report}");
         assert!(report.contains("userspace_health:"), "{report}");
         match select_backend() {
-            Ok(backend) => {
-                assert_eq!(backend, Backend::LinuxNative);
+            Ok(tier) => {
+                assert_eq!(tier, IsolationTier::LinuxNative);
                 assert!(
                     report.contains("backend_selected: linux_native"),
                     "{report}"
@@ -534,7 +600,7 @@ mod tests {
     #[test]
     fn userspace_floor_does_not_select_linux_native() {
         match select_backend_for(IsolationTier::Userspace) {
-            Ok((IsolationTier::Userspace, Backend::Userspace)) => {}
+            Ok(IsolationTier::Userspace) => {}
             Err(Failure::Runner(message)) => {
                 assert!(message.contains("userspace"), "{message}");
             }
@@ -552,7 +618,7 @@ mod tests {
         let error = run_sandboxed(
             command,
             scratch.path(),
-            Backend::Userspace,
+            IsolationTier::Userspace,
             Duration::from_secs(1),
             None,
             None,
@@ -572,7 +638,7 @@ mod tests {
         let error = run_sandboxed(
             command,
             scratch.path(),
-            Backend::Userspace,
+            IsolationTier::Userspace,
             Duration::from_secs(1),
             None,
             Some(1024 * 1024),
@@ -610,7 +676,7 @@ mod tests {
         let (status, stdout, stderr, _) = run_sandboxed(
             command,
             scratch.path(),
-            Backend::Userspace,
+            IsolationTier::Userspace,
             Duration::from_secs(5),
             None,
             None,
@@ -643,7 +709,7 @@ mod tests {
         let (status, stdout, stderr, _) = run_sandboxed(
             command,
             scratch.path(),
-            Backend::Userspace,
+            IsolationTier::Userspace,
             Duration::from_secs(5),
             None,
             None,
@@ -668,7 +734,7 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         let mut command = Command::new("sleep");
         command.arg("30");
-        let error = run_sandboxed(
+        let error = run_sandboxed_on(
             command,
             scratch.path(),
             Backend::Rlimit,
@@ -688,7 +754,7 @@ mod tests {
     fn overflow_wall_clock_is_a_runner_error() {
         let scratch = tempfile::tempdir().unwrap();
         let command = Command::new("true");
-        let error = run_sandboxed(
+        let error = run_sandboxed_on(
             command,
             scratch.path(),
             Backend::Rlimit,
@@ -712,7 +778,7 @@ mod tests {
             return;
         }
         let command = Command::new("true");
-        let error = run_sandboxed(
+        let error = run_sandboxed_on(
             command,
             scratch.path(),
             Backend::Rlimit,

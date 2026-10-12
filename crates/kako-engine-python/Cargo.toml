@@ -1,0 +1,16 @@
+[package]
+name = "kako-engine-python"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "Opt-in Python worker and runtime-image catalog for kako"
+
+[dependencies]
+kako-core = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+kekkai = { workspace = true }
+tempfile = { workspace = true }

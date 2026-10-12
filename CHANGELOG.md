@@ -8,6 +8,12 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- The workspace splits into `kako-core`, `kako-sandbox`, engine crates,
+  `kako-worker`, and `kako` ([ADR 0010](docs/decisions/0010-crate-graph.md)).
+  `kako::` module paths stay. Sandbox functions take `IsolationTier` and
+  return kako usage values instead of kekkai types. Job schema, receipts,
+  isolation policy, and the kekkai pin are unchanged.
+
 - kekkai pin moves to `73e24f580ed6223b7e8395793e6f2317eb8edfd9` (includes the
   userspace guest adapter). Default jobs still select `linux_native`. Jobs
   that require `userspace` spawn through the guest helper, or fail closed

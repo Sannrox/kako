@@ -305,7 +305,7 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
                 "runtime_image is only valid for python jobs".into(),
             ));
         }
-        Some(id) => Some(crate::engine_python::validate_runtime_image_id(&id)?),
+        Some(id) => Some(kako_engine_python::validate_runtime_image_id(&id)?),
         None => None,
     };
     let isolation = match parsed.isolation.as_deref() {

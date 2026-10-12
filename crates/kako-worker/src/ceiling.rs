@@ -8,11 +8,12 @@ use std::fs;
 use std::path::Path;
 use std::time::Instant;
 
-use crate::digest;
-use crate::engine::{execute_in_scratch, write_manifest};
-use crate::engine_python;
-use crate::stage::Scratch;
-use crate::{Engine, Input};
+use kako_core::digest;
+use kako_core::manifest::write_manifest;
+use kako_core::stage::Scratch;
+use kako_core::{Engine, Input};
+
+use crate::execute_in_scratch;
 
 const JOIN_SQL: &str = "COPY (
   SELECT c.id AS customer_id, c.name, sum(o.amount) AS total
@@ -125,7 +126,7 @@ fn join_agg_ceiling_records_duration_and_matching_outputs() {
         write_fixture(src.path(), customers);
         let duck = measure(Engine::DuckDbSql, customers, src.path());
         assert_eq!(duck.output_rows, customers as usize, "duckdb row count");
-        if engine_python::resolve_interpreter().is_ok() {
+        if kako_engine_python::resolve_interpreter().is_ok() {
             let python = measure(Engine::Python, customers, src.path());
             assert_eq!(python.output_rows, customers as usize, "python row count");
             assert_eq!(

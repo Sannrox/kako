@@ -9,11 +9,11 @@ use mizuchi::{
     VERSION,
 };
 
-use crate::engine::StagedInput;
-use crate::{Lineage, LineageRead, LineageWrite, WriteMode};
+use kako_core::manifest::StagedInput;
+use kako_core::{Lineage, LineageRead, LineageWrite, WriteMode};
 
 /// Run staged SQL through mizuchi. Returns `mizuchi <version>`.
-pub(crate) fn execute(
+pub fn execute(
     sql: &str,
     inputs: &[StagedInput],
     scratch: &Path,
@@ -363,9 +363,10 @@ fn write_csv(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{execute_in_scratch, write_manifest};
-    use crate::stage::Scratch;
-    use crate::{Engine, Input, WriteMode};
+    use kako_core::Input;
+    use kako_core::WriteMode;
+    use kako_core::manifest::StagedInput;
+    use kako_core::stage::Scratch;
     use std::fs;
 
     fn mizuchi_write_mode(mode: WriteMode) -> mizuchi::WriteMode {
@@ -377,6 +378,25 @@ mod tests {
 
     fn engine_bar_dir() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/engine-bar")
+    }
+
+    fn as_inputs(staged: &[(String, PathBuf)]) -> Vec<StagedInput> {
+        staged
+            .iter()
+            .map(|(name, relative)| StagedInput {
+                name: name.clone(),
+                relative: relative.display().to_string(),
+            })
+            .collect()
+    }
+
+    fn run_sql(
+        scratch: &Scratch,
+        sql: &str,
+        staged: &[(String, PathBuf)],
+        mode: WriteMode,
+    ) -> Result<String, String> {
+        execute(sql, &as_inputs(staged), scratch.path(), mode)
     }
 
     #[test]
@@ -438,8 +458,7 @@ mod tests {
                 },
             ])
             .unwrap();
-        write_manifest(scratch.path(), Engine::Mizuchi, &sql, &staged, &[]).unwrap();
-        let version = execute_in_scratch(scratch.path()).unwrap();
+        let version = run_sql(&scratch, &sql, &staged, WriteMode::Overwrite).unwrap();
         assert!(version.starts_with("mizuchi "), "{version}");
         let csv = fs::read_to_string(scratch.outputs_dir().join("totals.csv")).unwrap();
         assert!(csv.contains("customer_id") || csv.contains("id"), "{csv}");
@@ -450,7 +469,7 @@ mod tests {
             "expected aggregate 25, got {csv}"
         );
         assert!(csv.contains('7'), "expected aggregate 7, got {csv}");
-        let lineage: crate::Lineage =
+        let lineage: kako_core::Lineage =
             serde_json::from_str(&fs::read_to_string(scratch.path().join("lineage.json")).unwrap())
                 .unwrap();
         assert!(lineage.plan.contains("Logical Plan"), "{}", lineage.plan);
@@ -474,9 +493,8 @@ mod tests {
                 },
             ])
             .unwrap();
-        write_manifest(scratch2.path(), Engine::Mizuchi, &sql, &staged2, &[]).unwrap();
-        execute_in_scratch(scratch2.path()).unwrap();
-        let lineage2: crate::Lineage = serde_json::from_str(
+        run_sql(&scratch2, &sql, &staged2, WriteMode::Overwrite).unwrap();
+        let lineage2: kako_core::Lineage = serde_json::from_str(
             &fs::read_to_string(scratch2.path().join("lineage.json")).unwrap(),
         )
         .unwrap();
@@ -487,11 +505,11 @@ mod tests {
         assert_eq!(snap["lineage"]["writes"][0]["mode"], "overwrite");
     }
 
-    fn receipt_snapshot(lineage: &crate::Lineage) -> serde_json::Value {
-        let receipt = crate::Receipt {
+    fn receipt_snapshot(lineage: &kako_core::Lineage) -> serde_json::Value {
+        let receipt = kako_core::Receipt {
             job_id: "snap".into(),
             inputs: vec![],
-            code: crate::Digest("sha256:code".into()),
+            code: kako_core::Digest("sha256:code".into()),
             engine_version: "mizuchi test".into(),
             outputs: vec![],
             started_at: std::time::SystemTime::UNIX_EPOCH,
@@ -502,9 +520,9 @@ mod tests {
             memory_peak_bytes: None,
             lineage: Some(lineage.clone()),
             runtime_image: None,
-            isolation: crate::IsolationTier::LinuxNative,
+            isolation: kako_core::IsolationTier::LinuxNative,
         };
-        let json = crate::receipt::to_json(&receipt).unwrap();
+        let json = kako_core::receipt::to_json(&receipt).unwrap();
         let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
         let obj = value.as_object_mut().unwrap();
         obj.remove("started_at_unix_ms");
@@ -513,21 +531,12 @@ mod tests {
     }
 
     fn run_copy_with_mode(
-        scratch: &crate::stage::Scratch,
+        scratch: &Scratch,
         staged: &[(String, PathBuf)],
         sql: &str,
         write_mode: WriteMode,
-    ) -> crate::Lineage {
-        crate::engine::write_manifest_with(
-            scratch.path(),
-            Engine::Mizuchi,
-            sql,
-            staged,
-            &[],
-            write_mode,
-        )
-        .unwrap();
-        execute_in_scratch(scratch.path()).unwrap();
+    ) -> kako_core::Lineage {
+        run_sql(scratch, sql, staged, write_mode).unwrap();
         serde_json::from_str(&fs::read_to_string(scratch.path().join("lineage.json")).unwrap())
             .unwrap()
     }
@@ -559,16 +568,7 @@ mod tests {
         assert_eq!(first.writes[0].mode, "overwrite");
         assert_eq!(receipt_snapshot(&first), receipt_snapshot(&second));
 
-        crate::engine::write_manifest_with(
-            scratch.path(),
-            Engine::Mizuchi,
-            sql,
-            &staged,
-            &[],
-            WriteMode::Append,
-        )
-        .unwrap();
-        let err = execute_in_scratch(scratch.path()).unwrap_err();
+        let err = run_sql(&scratch, sql, &staged, WriteMode::Append).unwrap_err();
         assert!(err.contains("append"), "{err}");
         assert!(err.contains("COPY"), "{err}");
     }
@@ -586,15 +586,13 @@ mod tests {
                 path: input,
             }])
             .unwrap();
-        write_manifest(
-            scratch.path(),
-            Engine::Mizuchi,
+        let error = run_sql(
+            &scratch,
             "COPY (SELECT * FROM in) TO 'outputs/one.csv' (HEADER, DELIMITER ',');",
             &staged,
-            &[],
+            WriteMode::Overwrite,
         )
-        .unwrap();
-        let error = execute_in_scratch(scratch.path()).unwrap_err();
+        .unwrap_err();
         assert!(error.to_ascii_lowercase().contains("tsv"), "{error}");
     }
 
@@ -733,16 +731,14 @@ mod tests {
                 },
             )
             .unwrap();
-        write_manifest(
-            scratch.path(),
-            Engine::Mizuchi,
+        run_sql(
+            &scratch,
             "COPY (SELECT id FROM sales WHERE year = 2020) TO 'outputs/ids.csv' (HEADER, DELIMITER ',');",
             &[("sales".into(), PathBuf::from("inputs/sales"))],
-            &[],
+            WriteMode::Overwrite,
         )
         .unwrap();
-        execute_in_scratch(scratch.path()).unwrap();
-        let lineage: crate::Lineage =
+        let lineage: kako_core::Lineage =
             serde_json::from_str(&fs::read_to_string(scratch.path().join("lineage.json")).unwrap())
                 .unwrap();
         assert_eq!(lineage.reads.len(), 1);

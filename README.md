@@ -10,8 +10,9 @@ outputs together with a receipt describing exactly what ran.
 > See [ADR 0002](docs/decisions/0002-sandboxed-transform-runner.md),
 > [ADR 0005](docs/decisions/0005-python-runtime-image.md),
 > [ADR 0006](docs/decisions/0006-python-package-policy.md),
-> [ADR 0008](docs/decisions/0008-release-artifacts.md), and
-> [ADR 0009](docs/decisions/0009-isolation-tier.md).
+> [ADR 0008](docs/decisions/0008-release-artifacts.md),
+> [ADR 0009](docs/decisions/0009-isolation-tier.md), and
+> [ADR 0010](docs/decisions/0010-crate-graph.md).
 
 ## How it works
 
@@ -113,7 +114,8 @@ Adding or switching an engine is opt-in behind the bar in
 
 ## Job sources
 
-A job source is a small trait (`JobSource` in `crates/kako/src/lib.rs`): it
+A job source is a small trait (`JobSource` in `kako-core`, re-exported as
+`kako::JobSource`): it
 hands out jobs and receives results. The source decides what runs and whether
 to retry; kako only executes.
 

@@ -1,5 +1,13 @@
 [workspace]
-members = ["crates/kako"]
+members = [
+    "crates/kako-core",
+    "crates/kako-sandbox",
+    "crates/kako-engine-duckdb",
+    "crates/kako-engine-mizuchi",
+    "crates/kako-engine-python",
+    "crates/kako-worker",
+    "crates/kako",
+]
 default-members = ["crates/kako"]
 resolver = "2"
 
@@ -10,3 +18,20 @@ license = "Apache-2.0"
 repository = "https://github.com/Sannrox/kako"
 # Off while kekkai and the opt-in SQL engine are git pins (ADR 0008).
 publish = false
+
+[workspace.dependencies]
+kako-core = { path = "crates/kako-core" }
+kako-sandbox = { path = "crates/kako-sandbox" }
+kako-engine-duckdb = { path = "crates/kako-engine-duckdb" }
+kako-engine-mizuchi = { path = "crates/kako-engine-mizuchi" }
+kako-engine-python = { path = "crates/kako-engine-python" }
+kako-worker = { path = "crates/kako-worker" }
+arrow = { version = "60.0.0", default-features = false, features = ["csv"] }
+duckdb = { version = "=1.10506.0", default-features = false, features = ["bundled", "parquet"] }
+kekkai = { git = "https://github.com/Sannrox/kekkai", rev = "73e24f580ed6223b7e8395793e6f2317eb8edfd9", default-features = false, features = ["guest"] }
+mizuchi = { git = "https://github.com/Sannrox/mizuchi", rev = "1e74b23238a84a250242e6db1b97cf9da7e016b4", default-features = false }
+serde = { version = "1", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+sha2 = { version = "0.10", default-features = false, features = ["std"] }
+libc = "0.2"
+tempfile = "3"

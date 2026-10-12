@@ -28,7 +28,7 @@ fn main() {
                 eprintln!("kako: --internal-execute requires a scratch directory");
                 process::exit(2);
             }
-            match kako::engine::execute_in_scratch(Path::new(&scratch)) {
+            match kako_worker::execute_in_scratch(Path::new(&scratch)) {
                 Ok(version) => println!("{version}"),
                 Err(error) => {
                     eprintln!("{error}");
