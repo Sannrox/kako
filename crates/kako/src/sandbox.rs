@@ -19,8 +19,8 @@ pub fn select_backend() -> Result<Backend, Failure> {
 /// Map a job's isolation floor onto a kekkai backend. Never returns a weaker
 /// tier than `required`.
 ///
-/// This pin only health-checks `linux_native`. `userspace` and `kvm` stay
-/// runner failures until the guest pin (Issue #33) and spawn (Issue #3).
+/// This pin health-checks `linux_native`. `userspace` and `kvm` stay
+/// runner failures until spawn (Issue #3).
 pub fn select_backend_for(required: IsolationTier) -> Result<(IsolationTier, Backend), Failure> {
     let linux = settings(Backend::LinuxNative, None, None, extra_readable_roots(&[]));
     let linux_health = kekkai::health(&linux);
@@ -99,6 +99,7 @@ fn health_line(health: &Health) -> String {
         Health::Ok(message) => format!("ok {message}"),
         Health::Warning(message) => format!("warning {message}"),
         Health::Error(message) => format!("error {message}"),
+        _ => "unrecognized".into(),
     }
 }
 
@@ -108,25 +109,23 @@ fn settings(
     memory_bytes: Option<u64>,
     readable_roots: Vec<PathBuf>,
 ) -> Settings {
-    Settings {
-        backend,
-        limits: Limits {
+    Settings::builder()
+        .backend(backend)
+        .limits(Limits {
             cpu_time_secs,
             // RLIMIT_AS; unset because it breaks numeric engines (ADR 0002).
             memory_mb: None,
             user_processes: None,
             file_size_mb: None,
             open_files: None,
-        },
-        readable_roots,
-        writable_roots: Vec::new(),
-        network: Network::Deny,
-        cgroup: CgroupLimits {
+        })
+        .readable_roots(readable_roots)
+        .network(Network::Deny)
+        .cgroup(CgroupLimits {
             memory_max: memory_bytes,
             ..CgroupLimits::default()
-        },
-        cgroup_root: None,
-    }
+        })
+        .build()
 }
 
 fn extra_readable_roots(extra: &[PathBuf]) -> Vec<PathBuf> {
@@ -319,6 +318,13 @@ pub fn probe_network_exit() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guest_backend_type_is_nameable() {
+        let settings = Settings::builder().backend(Backend::Userspace).build();
+        assert_eq!(settings.backend, Backend::Userspace);
+        assert_eq!(settings.backend.to_string(), "userspace");
+    }
 
     #[test]
     fn extra_readable_roots_do_not_grant_sys() {

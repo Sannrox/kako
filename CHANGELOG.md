@@ -6,6 +6,12 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- kekkai pin moves to `73e24f580ed6223b7e8395793e6f2317eb8edfd9` (includes the
+  userspace guest adapter). `kako run` / `kako doctor` still select
+  `linux_native` and still fail closed when that backend cannot be applied.
+
 ### Added
 
 - Isolation is a job-source floor (`isolation` on the job, recorded on the
