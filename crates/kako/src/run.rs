@@ -685,4 +685,71 @@ mod tests {
             source.started
         );
     }
+
+    /// With N owners and one flood, every other owner's first job starts
+    /// within N−1 slots of the first start. Sequential `run_source` records
+    /// one start per slot; missing-input jobs fail before the sandbox.
+    #[test]
+    fn fair_source_load_test_bounds_non_flood_start_delay() {
+        const TRIALS: usize = 25;
+        const FLOOD: usize = 40;
+        let flood_owner = "alpha";
+        let others = ["beta", "gamma"];
+        let max_delay = others.len();
+        let mut worst_delay = 0usize;
+
+        for trial in 0..TRIALS {
+            let mut jobs = Vec::new();
+            for i in 0..FLOOD {
+                jobs.push(queued_job(&format!("t{trial}-a{i}"), flood_owner));
+            }
+            for other in others {
+                jobs.push(queued_job(&format!("t{trial}-{other}"), other));
+            }
+            let mut source = RecordingSource {
+                inner: crate::fair::FairSource::new(jobs).unwrap(),
+                started: Vec::new(),
+                started_at: Vec::new(),
+            };
+            let parent = tempfile::tempdir().unwrap();
+            let config = RunnerConfig {
+                worker: PathBuf::from("/bin/false"),
+                scratch_parent: parent.path().to_path_buf(),
+            };
+            let finishes = run_source(&mut source, &config).unwrap();
+            assert_eq!(finishes.len(), FLOOD + others.len());
+            assert!(
+                finishes.iter().all(|finish| matches!(
+                    finish,
+                    JobFinish::Failed { failure: Failure::Runner(msg), .. } if msg.contains("gone")
+                )),
+                "trial {trial}: {finishes:?}"
+            );
+
+            let started = &source.started;
+            let last_flood_slot = started
+                .iter()
+                .rposition(|tenant| tenant == flood_owner)
+                .expect("flood starts");
+            for other in others {
+                let slot = started
+                    .iter()
+                    .position(|tenant| tenant == other)
+                    .unwrap_or_else(|| panic!("{other} run started; started {started:?}"));
+                assert!(
+                    slot <= max_delay,
+                    "trial {trial}: {other} started at slot {slot} (bound {max_delay}); started {started:?}"
+                );
+                assert!(
+                    slot < last_flood_slot,
+                    "trial {trial}: {other} must start before the flood drains; started {started:?}"
+                );
+                worst_delay = worst_delay.max(slot);
+            }
+        }
+        assert!(
+            worst_delay <= max_delay,
+            "worst non-flood start delay {worst_delay} exceeds bound {max_delay}"
+        );
+    }
 }
