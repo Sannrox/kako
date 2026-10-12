@@ -1,0 +1,18 @@
+[package]
+name = "kako-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+description = "In-process engine dispatch for kako --internal-execute"
+
+[dependencies]
+kako-core = { workspace = true }
+kako-engine-duckdb = { workspace = true }
+kako-engine-mizuchi = { workspace = true }
+kako-engine-python = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+serde_json = { workspace = true }

@@ -28,7 +28,7 @@ fn linux_native_ready() -> bool {
 fn userspace_ready() -> bool {
     matches!(
         sandbox::select_backend_for(kako::IsolationTier::Userspace),
-        Ok((_, backend)) if backend.to_string() == "userspace"
+        Ok(tier) if tier.to_string() == "userspace"
     )
 }
 

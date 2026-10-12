@@ -7,7 +7,6 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::digest::{hash_bytes, hash_file};
 use crate::engine;
-use crate::engine_python;
 use crate::sandbox;
 use crate::stage::Scratch;
 use crate::{Engine, Failure, Job, JobSource, Output, QuotaKey, Receipt};
@@ -85,7 +84,7 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
     let python_image = match job.engine {
         crate::Engine::DuckDbSql | crate::Engine::Mizuchi => None,
         crate::Engine::Python => Some(
-            engine_python::ImageCatalog::from_env()
+            kako_engine_python::ImageCatalog::from_env()
                 .select(job.runtime_image.as_deref())
                 .map_err(Failure::Runner)?,
         ),
@@ -93,7 +92,7 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
     let python = match job.engine {
         crate::Engine::DuckDbSql | crate::Engine::Mizuchi => None,
         crate::Engine::Python => {
-            Some(engine_python::resolve_interpreter().map_err(Failure::Runner)?)
+            Some(kako_engine_python::resolve_interpreter().map_err(Failure::Runner)?)
         }
     };
     let started_at = SystemTime::now();
@@ -122,23 +121,19 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
         .as_ref()
         .and_then(|image| image.site_packages.as_ref())
     {
-        engine_python::write_python_site(scratch.path(), site).map_err(Failure::Runner)?;
+        kako_engine_python::write_python_site(scratch.path(), site).map_err(Failure::Runner)?;
     }
 
-    let (isolation, backend) = sandbox::select_backend_for(job.isolation)?;
+    let isolation = sandbox::select_backend_for(job.isolation)?;
     let cpu_time_secs = Some(cpu_limit_secs(job)?);
-    let worker = if matches!(backend, kekkai::Backend::Userspace) {
-        sandbox::stage_guest_worker(&config.worker, scratch.path())?
-    } else {
-        config.worker.clone()
-    };
+    let worker = sandbox::stage_worker(&config.worker, scratch.path(), isolation)?;
     let mut command = Command::new(&worker);
     command.arg("--internal-execute").arg(scratch.path());
     let mut extra_readable = if let Some(ref interpreter) = python {
         command.env("KAKO_PYTHON", interpreter);
         command.env("PYTHONNOUSERSITE", "1");
         command.env("PYTHONDONTWRITEBYTECODE", "1");
-        engine_python::python_readable_roots(interpreter).map_err(Failure::Runner)?
+        kako_engine_python::python_readable_roots(interpreter).map_err(Failure::Runner)?
     } else {
         Vec::new()
     };
@@ -148,13 +143,13 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
     {
         extra_readable.push(site.clone());
     }
-    if !matches!(backend, kekkai::Backend::Userspace) {
+    if sandbox::host_worker_readable(isolation) {
         extra_readable.push(config.worker.clone());
     }
     let (status, stdout, stderr, usage) = sandbox::run_sandboxed(
         command,
         scratch.path(),
-        backend,
+        isolation,
         job.wall_clock,
         cpu_time_secs,
         job.memory_bytes,

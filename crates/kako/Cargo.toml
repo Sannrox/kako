@@ -11,17 +11,16 @@ categories = ["command-line-utilities", "database"]
 homepage = "https://github.com/Sannrox/kako"
 
 [dependencies]
-arrow = { version = "60.0.0", default-features = false, features = ["csv"] }
-duckdb = { version = "=1.10506.0", features = ["bundled", "parquet"] }
-kekkai = { git = "https://github.com/Sannrox/kekkai", rev = "73e24f580ed6223b7e8395793e6f2317eb8edfd9", features = ["guest"] }
-mizuchi = { git = "https://github.com/Sannrox/mizuchi", rev = "1e74b23238a84a250242e6db1b97cf9da7e016b4" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-sha2 = "0.10"
+kako-core = { workspace = true }
+kako-engine-python = { workspace = true }
+kako-sandbox = { workspace = true }
+kako-worker = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2"
+libc = { workspace = true }
 
 [dev-dependencies]
-serde_json = "1"
-tempfile = "3"
+serde_json = { workspace = true }
+tempfile = { workspace = true }

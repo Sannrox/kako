@@ -1166,14 +1166,77 @@ dependencies = [
 name = "kako"
 version = "0.1.0"
 dependencies = [
- "arrow 60.0.0",
- "duckdb",
- "kekkai",
+ "kako-core",
+ "kako-engine-python",
+ "kako-sandbox",
+ "kako-worker",
  "libc",
- "mizuchi",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "kako-core"
+version = "0.1.0"
+dependencies = [
+ "libc",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
+]
+
+[[package]]
+name = "kako-engine-duckdb"
+version = "0.1.0"
+dependencies = [
+ "duckdb",
+ "kako-core",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "kako-engine-mizuchi"
+version = "0.1.0"
+dependencies = [
+ "arrow 60.0.0",
+ "kako-core",
+ "mizuchi",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "kako-engine-python"
+version = "0.1.0"
+dependencies = [
+ "kako-core",
+ "kekkai",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "kako-sandbox"
+version = "0.1.0"
+dependencies = [
+ "kako-core",
+ "kekkai",
+ "libc",
+ "tempfile",
+]
+
+[[package]]
+name = "kako-worker"
+version = "0.1.0"
+dependencies = [
+ "kako-core",
+ "kako-engine-duckdb",
+ "kako-engine-mizuchi",
+ "kako-engine-python",
+ "serde_json",
  "tempfile",
 ]
 

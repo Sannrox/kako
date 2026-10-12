@@ -8,15 +8,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::Digest;
-use crate::digest;
-use crate::engine::StagedInput;
+use kako_core::Digest;
+use kako_core::digest;
+use kako_core::manifest::StagedInput;
 
 const WRAPPER: &str = include_str!("../../../runtime/python/kako_run.py");
 const LOCKFILE: &[u8] = include_bytes!("../../../runtime/python/requirements.txt");
 
 /// CI sets `KAKO_REQUIRE_PYTHON=1` so a missing runtime is a failure, not a skip.
-pub(crate) fn python_tests_required() -> bool {
+pub fn python_tests_required() -> bool {
     matches!(std::env::var("KAKO_REQUIRE_PYTHON"), Ok(value) if value == "1")
 }
 
@@ -27,19 +27,19 @@ pub fn runtime_image_id() -> String {
 
 /// A resolved Python image: lockfile identity plus optional extra site-packages.
 #[derive(Debug)]
-pub(crate) struct PythonImage {
+pub struct PythonImage {
     pub id: String,
     pub site_packages: Option<PathBuf>,
 }
 
 /// Operator catalog of shipped Python images (`KAKO_PYTHON_IMAGES`).
-pub(crate) struct ImageCatalog {
+pub struct ImageCatalog {
     pub root: Option<PathBuf>,
     pub shipped_id: String,
 }
 
 impl ImageCatalog {
-    pub(crate) fn from_env() -> Self {
+    pub fn from_env() -> Self {
         Self {
             root: std::env::var_os("KAKO_PYTHON_IMAGES").map(PathBuf::from),
             shipped_id: runtime_image_id(),
@@ -47,7 +47,7 @@ impl ImageCatalog {
     }
 
     /// Select the image the job asked for, or the catalog default.
-    pub(crate) fn select(&self, pin: Option<&str>) -> Result<PythonImage, String> {
+    pub fn select(&self, pin: Option<&str>) -> Result<PythonImage, String> {
         let wanted = match pin {
             None => self.default_id()?,
             Some(pin) => validate_runtime_image_id(pin)?,
@@ -88,7 +88,7 @@ impl ImageCatalog {
 }
 
 /// Accept `python-lockfile:sha256:<64 hex>` and canonicalize the hex.
-pub(crate) fn validate_runtime_image_id(id: &str) -> Result<String, String> {
+pub fn validate_runtime_image_id(id: &str) -> Result<String, String> {
     let hex = image_hex(id)?;
     if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(format!(
@@ -128,7 +128,7 @@ fn load_catalog_entry(dir: &Path, expected_id: &str) -> Result<PythonImage, Stri
 }
 
 /// Tell the worker which extra site-packages tree to put on PYTHONPATH.
-pub(crate) fn write_python_site(scratch: &Path, site: &Path) -> Result<(), String> {
+pub fn write_python_site(scratch: &Path, site: &Path) -> Result<(), String> {
     let text = site
         .to_str()
         .ok_or_else(|| format!("python site-packages path is not utf-8: {}", site.display()))?;
@@ -298,7 +298,7 @@ fn push_python_root(roots: &mut Vec<PathBuf>, path: &Path) {
 }
 
 /// Write user source plus the wrapper and exec the interpreter in scratch.
-pub(crate) fn execute(
+pub fn execute(
     code: &str,
     _inputs: &[StagedInput],
     _outputs: &[String],
@@ -333,9 +333,10 @@ pub(crate) fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::write_manifest;
-    use crate::stage::Scratch;
-    use crate::{Engine, Input};
+    use kako_core::Engine;
+    use kako_core::Input;
+    use kako_core::manifest::write_manifest;
+    use kako_core::stage::Scratch;
     use std::ffi::OsString;
 
     fn engine_bar_dir() -> PathBuf {
@@ -394,7 +395,7 @@ mod tests {
             &["totals.csv".into()],
         )
         .unwrap();
-        let version = crate::engine::execute_in_scratch(scratch.path()).unwrap();
+        let version = crate::execute(code, &[], &[], scratch.path()).unwrap();
         let csv = fs::read_to_string(scratch.outputs_dir().join("totals.csv")).unwrap();
         (version, csv)
     }
@@ -552,7 +553,7 @@ def transform(inputs):
         )
         .unwrap();
         write_python_site(scratch.path(), site).unwrap();
-        crate::engine::execute_in_scratch(scratch.path()).unwrap();
+        crate::execute(code, &[], &[], scratch.path()).unwrap();
         fs::read_to_string(scratch.outputs_dir().join("marker.csv")).unwrap()
     }
 
