@@ -8,4 +8,5 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 repository = "https://github.com/Sannrox/kako"
+# Off while kekkai and the opt-in SQL engine are git pins (ADR 0008).
 publish = false

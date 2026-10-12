@@ -8,6 +8,13 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Tagged GitHub releases package the runner binary, SQL and Python runtime
+  images, checksums, and artifact attestations. Crates stay unpublished
+  while git pins remain
+  ([ADR 0008](docs/decisions/0008-release-artifacts.md)).
+  `bash scripts/release-dry-run.sh --out dist` builds the same files
+  without creating a release.
+
 - `kako run <job.json>`: local job source, copied input staging, sandboxed
   DuckDB SQL worker under kekkai `linux_native`, SHA-256 receipts, and
   scratch cleanup on success, failure, and timeout. Runs fail closed when

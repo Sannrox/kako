@@ -1,0 +1,109 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "scripts/release-dry-run.sh"
+      - "runtime/sql/**"
+      - "runtime/python/Dockerfile"
+      - "runtime/python/requirements.txt"
+      - "runtime/python/kako_run.py"
+      - "docs/decisions/0008-release-artifacts.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Package artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Package
+        run: |
+          extra=()
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            extra+=(--version "${GITHUB_REF_NAME#v}")
+          fi
+          bash scripts/release-dry-run.sh --out dist --with-images --with-site-packages "${extra[@]}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kako-release
+          path: dist/
+          if-no-files-found: error
+
+  attest:
+    name: Attest artifacts
+    needs: package
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: kako-release
+          path: dist
+      - name: Attest artifacts
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: |
+            dist/kako-*.tar.gz
+            dist/kako-*-image.tar
+            dist/SHA256SUMS
+
+  publish:
+    name: GitHub Release
+    needs: [package, attest]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: kako-release
+          path: dist
+      - name: Notes from CHANGELOG
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          python3 - "$version" <<'PY'
+          import pathlib, sys
+          version = sys.argv[1]
+          text = pathlib.Path("CHANGELOG.md").read_text()
+          heading = f"## [{version}]"
+          start = text.find(heading)
+          if start < 0:
+              raise SystemExit(f"CHANGELOG.md has no {heading} section")
+          rest = text[start + len(heading):]
+          nxt = rest.find("\n## [")
+          body = rest if nxt < 0 else rest[:nxt]
+          pathlib.Path("dist/RELEASE_NOTES.md").write_text(heading + body)
+          PY
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" dist/kako-*.tar.gz dist/kako-*-image.tar dist/SHA256SUMS \
+            --title "$TAG" \
+            --notes-file dist/RELEASE_NOTES.md

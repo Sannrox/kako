@@ -11,5 +11,6 @@ Decisions that must outlive a single PR.
 | [0005](0005-python-runtime-image.md) | Python engine uses a baked runtime image and cgroup memory | Accepted |
 | [0006](0006-python-package-policy.md) | Python jobs pin a curated runtime image | Accepted |
 | [0007](0007-single-node-execution.md) | kako stays single-node; scale out by partition fan-out | Accepted |
+| [0008](0008-release-artifacts.md) | Releases ship GitHub artifacts; crates stay unpublished | Accepted |
 
 Template: short context, decision, consequences, rejected alternatives.
