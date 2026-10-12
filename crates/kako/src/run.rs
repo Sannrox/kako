@@ -118,7 +118,7 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
         engine_python::write_python_site(scratch.path(), site).map_err(Failure::Runner)?;
     }
 
-    let backend = sandbox::select_backend()?;
+    let (isolation, backend) = sandbox::select_backend_for(job.isolation)?;
     let cpu_time_secs = Some(cpu_limit_secs(job)?);
     let mut command = Command::new(&config.worker);
     command.arg("--internal-execute").arg(scratch.path());
@@ -186,6 +186,7 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
         memory_peak_bytes: usage.memory_peak_bytes,
         lineage,
         runtime_image: python_image.map(|image| image.id),
+        isolation,
     };
     Ok(CompletedRun {
         outputs,
@@ -330,6 +331,7 @@ mod tests {
             tenant_id: "local".into(),
             namespace: "default".into(),
             runtime_image: None,
+            isolation: crate::IsolationTier::LinuxNative,
         };
         let mut source = Fake {
             jobs: vec![job],
@@ -354,6 +356,44 @@ mod tests {
     }
 
     #[test]
+    fn userspace_floor_fails_closed_before_scratch() {
+        let parent = tempfile::tempdir().unwrap();
+        let job = Job {
+            id: "guest".into(),
+            engine: Engine::DuckDbSql,
+            code: "SELECT 1".into(),
+            inputs: vec![],
+            outputs: vec!["out.csv".into()],
+            wall_clock: Duration::from_secs(5),
+            cpu_time: None,
+            memory_bytes: None,
+            tenant_id: "local".into(),
+            namespace: "default".into(),
+            runtime_image: None,
+            isolation: crate::IsolationTier::Userspace,
+        };
+        match execute_job(
+            &job,
+            &RunnerConfig {
+                worker: PathBuf::from("/bin/false"),
+                scratch_parent: parent.path().to_path_buf(),
+            },
+        ) {
+            Err(Failure::Runner(message)) => {
+                assert!(message.contains("userspace"), "{message}");
+            }
+            Err(other) => panic!("expected runner failure, got {other}"),
+            Ok(_) => panic!("userspace floor must fail closed until the guest pin"),
+        }
+        let leftovers: Vec<_> = fs::read_dir(parent.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("kako-run-"))
+            .collect();
+        assert!(leftovers.is_empty(), "scratch leftover: {leftovers:?}");
+    }
+
+    #[test]
     fn unknown_python_image_pin_fails_before_sandbox() {
         let parent = tempfile::tempdir().unwrap();
         let pin = format!("python-lockfile:sha256:{}", "ab".repeat(32));
@@ -369,6 +409,7 @@ mod tests {
             tenant_id: "local".into(),
             namespace: "default".into(),
             runtime_image: Some(pin),
+            isolation: crate::IsolationTier::LinuxNative,
         };
         match execute_job(
             &job,
@@ -400,6 +441,7 @@ mod tests {
             tenant_id: String::new(),
             namespace: "default".into(),
             runtime_image: None,
+            isolation: crate::IsolationTier::LinuxNative,
         };
         let mut source = Fake {
             jobs: vec![job],
@@ -448,6 +490,7 @@ mod tests {
             tenant_id: tenant.into(),
             namespace: "default".into(),
             runtime_image: None,
+            isolation: crate::IsolationTier::LinuxNative,
         }
     }
 
@@ -469,6 +512,7 @@ mod tests {
             tenant_id: tenant.into(),
             namespace: "default".into(),
             runtime_image: None,
+            isolation: crate::IsolationTier::LinuxNative,
         }
     }
 

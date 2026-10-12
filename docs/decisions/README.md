@@ -12,5 +12,6 @@ Decisions that must outlive a single PR.
 | [0006](0006-python-package-policy.md) | Python jobs pin a curated runtime image | Accepted |
 | [0007](0007-single-node-execution.md) | kako stays single-node; scale out by partition fan-out | Accepted |
 | [0008](0008-release-artifacts.md) | Releases ship GitHub artifacts; crates stay unpublished | Accepted |
+| [0009](0009-isolation-tier.md) | Isolation-tier selection is a job-source floor; kako fails closed | Accepted |
 
 Template: short context, decision, consequences, rejected alternatives.

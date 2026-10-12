@@ -86,7 +86,8 @@ fn cli_join_twice_same_output_digest() {
         assert!(csv.contains("25") || csv.contains("25.0"), "{csv}");
         let receipt = fs::read_to_string(out.join("receipt.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&receipt).unwrap();
-        assert_eq!(v["receipt_version"], 2);
+        assert_eq!(v["receipt_version"], 3);
+        assert_eq!(v["isolation"], "linux_native");
         assert_eq!(v["job_id"], "join-agg");
         assert!(
             v["inputs"]["customers"]
@@ -153,6 +154,47 @@ fn cli_mizuchi_join() {
     );
     assert!(v["lineage"]["plan"].as_str().is_some(), "{receipt}");
     assert!(v["lineage"]["reads"].as_array().is_some(), "{receipt}");
+}
+
+#[test]
+fn cli_run_fails_closed_when_job_requires_userspace() {
+    let dir = tempfile::tempdir().unwrap();
+    let job = dir.path().join("job.json");
+    fs::write(
+        &job,
+        r#"{
+          "id": "guest",
+          "sql": "COPY (SELECT 1 AS n) TO 'outputs/totals.csv' (HEADER, DELIMITER ',');",
+          "inputs": {},
+          "outputs": ["totals.csv"],
+          "isolation": "userspace",
+          "timeout_ms": 15000
+        }"#,
+    )
+    .unwrap();
+    let out = dir.path().join("out");
+    let output = Command::new(worker())
+        .arg("run")
+        .arg(&job)
+        .arg("--output")
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "userspace floor must fail closed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("userspace"), "{stderr}");
+    assert!(
+        !out.join("receipt.json").exists(),
+        "fail-closed run must not write a receipt"
+    );
+    assert!(
+        !out.join("totals.csv").exists(),
+        "fail-closed run must not write outputs"
+    );
 }
 
 #[test]
@@ -336,7 +378,8 @@ fn cli_copy_constant_row() {
     assert!(csv.contains('1'), "{csv}");
     let receipt = fs::read_to_string(out.join("receipt.json")).unwrap();
     let v: serde_json::Value = serde_json::from_str(&receipt).unwrap();
-    assert_eq!(v["receipt_version"], 2);
+    assert_eq!(v["receipt_version"], 3);
+    assert_eq!(v["isolation"], "linux_native");
     assert_eq!(v["tenant_id"], "local");
     assert_eq!(v["namespace"], "default");
     assert!(

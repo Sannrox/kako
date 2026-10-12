@@ -9,8 +9,9 @@ outputs together with a receipt describing exactly what ran.
 > outputs plus a receipt. External job sources are not implemented yet.
 > See [ADR 0002](docs/decisions/0002-sandboxed-transform-runner.md),
 > [ADR 0005](docs/decisions/0005-python-runtime-image.md),
-> [ADR 0006](docs/decisions/0006-python-package-policy.md), and
-> [ADR 0008](docs/decisions/0008-release-artifacts.md).
+> [ADR 0006](docs/decisions/0006-python-package-policy.md),
+> [ADR 0008](docs/decisions/0008-release-artifacts.md), and
+> [ADR 0009](docs/decisions/0009-isolation-tier.md).
 
 ## How it works
 
@@ -42,8 +43,9 @@ kako run job.json --require-identity
 ```
 
 `kako doctor` prints host capabilities. `kako run` uses kekkai `linux_native`
-(Landlock filesystem allowlist and seccomp network deny). If that backend
-cannot be applied, the run fails closed.
+(Landlock filesystem allowlist and seccomp network deny) unless the job
+sets a stronger `isolation` floor. If the required tier cannot be applied,
+the run fails closed. There is no silent downgrade.
 
 A job file is JSON:
 
@@ -58,9 +60,13 @@ A job file is JSON:
   "outputs": ["totals.csv"],
   "timeout_ms": 60000,
   "tenant_id": "local",
-  "namespace": "default"
+  "namespace": "default",
+  "isolation": "linux_native"
 }
 ```
+
+`isolation` is a minimum tier (`linux_native`, `userspace`, or `kvm`).
+Omitted means `linux_native`. The receipt records the tier that ran.
 
 Input paths are relative to the job file. Each input is staged as a DuckDB
 view with that name. User SQL writes files under `outputs/`. kako copies those
