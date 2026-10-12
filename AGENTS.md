@@ -239,9 +239,9 @@ Add focused tests for the run loop (job failure, limit hits, source errors),
 input staging, sandboxed execution, output hashing, receipts, and
 scratch cleanup on success, failure, and timeout. Prefer deterministic tests
 with a fake job source. Mark tests that need an external job source, a Python
-runtime, or kernel sandbox features as ignored, and document their
-prerequisites in the test. Offline `cargo test` must stay green without any
-external system.
+runtime, kernel sandbox features, or the `kekkai-guest` helper as ignored,
+and document their prerequisites in the test. Offline `cargo test` must stay
+green without any external system.
 
 ## Commit & Pull Request Guidelines
 

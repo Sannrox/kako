@@ -24,6 +24,13 @@ fn linux_native_ready() -> bool {
     }
 }
 
+fn userspace_ready() -> bool {
+    matches!(
+        sandbox::select_backend_for(kako::IsolationTier::Userspace),
+        Ok((_, backend)) if backend.to_string() == "userspace"
+    )
+}
+
 fn join_job(dir: &Path) -> std::path::PathBuf {
     fs::write(dir.join("customers.csv"), "id,name\n1,a\n2,b\n").unwrap();
     fs::write(
@@ -158,6 +165,9 @@ fn cli_mizuchi_join() {
 
 #[test]
 fn cli_run_fails_closed_when_job_requires_userspace() {
+    if userspace_ready() {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let job = dir.path().join("job.json");
     fs::write(
@@ -229,6 +239,7 @@ fn cli_doctor_reports_backend() {
         stdout.contains("linux_native") || stdout.contains("rlimit"),
         "{stdout}"
     );
+    assert!(stdout.contains("userspace_health:"), "{stdout}");
 }
 
 #[test]
@@ -718,4 +729,90 @@ fn python_polars_join_finishes_under_cgroup_memory() {
     }
     let csv = fs::read_to_string(out.join("totals.csv")).unwrap();
     assert_join_csv(&csv);
+}
+
+/// Requires Linux, `linux_native` health, and `kekkai-guest` on PATH or
+/// `KEKKAI_GUEST_HELPER`. Offline `cargo test` skips this.
+#[test]
+#[ignore = "needs kekkai-guest helper; set KEKKAI_GUEST_HELPER"]
+fn cli_run_userspace_writes_receipt_isolation() {
+    assert!(
+        userspace_ready(),
+        "guest helper and linux_native health are required"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let job = join_job(dir.path());
+    let raw = fs::read_to_string(&job).unwrap();
+    let mut body: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    body["isolation"] = serde_json::json!("userspace");
+    fs::write(&job, body.to_string()).unwrap();
+    let out = dir.path().join("out");
+    let output = Command::new(worker())
+        .arg("run")
+        .arg(&job)
+        .arg("--output")
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "userspace run failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let receipt = fs::read_to_string(out.join("receipt.json")).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&receipt).unwrap();
+    assert_eq!(v["isolation"], "userspace", "{receipt}");
+    let csv = fs::read_to_string(out.join("totals.csv")).unwrap();
+    assert!(csv.contains('a'), "{csv}");
+}
+
+/// Requires Linux, `linux_native` health, and `kekkai-guest` on PATH or
+/// `KEKKAI_GUEST_HELPER`. Offline `cargo test` skips this.
+#[test]
+#[ignore = "needs kekkai-guest helper; set KEKKAI_GUEST_HELPER"]
+fn cli_run_userspace_cannot_read_host_secret() {
+    assert!(
+        userspace_ready(),
+        "guest helper and linux_native health are required"
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let secret = dir.path().join("host-secret.txt");
+    fs::write(&secret, "guest-escape-token").unwrap();
+    let secret_path = secret.display().to_string().replace('\\', "\\\\");
+    fs::write(dir.path().join("in.csv"), "x\n1\n").unwrap();
+    let job = dir.path().join("job.json");
+    fs::write(
+        &job,
+        format!(
+            r#"{{
+          "id": "escape",
+          "sql": "COPY (SELECT * FROM read_csv_auto('{secret_path}')) TO 'outputs/totals.csv' (HEADER, DELIMITER ',');",
+          "inputs": {{"in": "in.csv"}},
+          "outputs": ["totals.csv"],
+          "isolation": "userspace",
+          "timeout_ms": 15000
+        }}"#
+        ),
+    )
+    .unwrap();
+    let out = dir.path().join("out");
+    let output = Command::new(worker())
+        .arg("run")
+        .arg(&job)
+        .arg("--output")
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "guest SQL must not read a host secret"
+    );
+    assert!(
+        !out.join("totals.csv").exists(),
+        "escape must not write output"
+    );
+    assert!(
+        !out.join("receipt.json").exists(),
+        "escape must not write a receipt"
+    );
 }

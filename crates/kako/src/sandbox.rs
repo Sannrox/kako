@@ -1,15 +1,30 @@
 //! kekkai backend selection, doctor, and sandboxed spawn.
 
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use kekkai::{Backend, CgroupLimits, ChildUsage, Health, Limits, Network, Sandbox, Settings};
+use kekkai::{
+    Backend, CaptureKeep, CaptureLimits, CgroupLimits, ChildUsage, Health, Limits, Network,
+    Sandbox, Settings,
+};
 
 use crate::Failure;
 use crate::isolation::{self, IsolationTier};
+
+/// Stdout/stderr cap for guest capture. The worker prints an engine version
+/// line; errors stay bounded so a noisy child cannot fill the parent.
+const GUEST_CAPTURE: CaptureLimits = CaptureLimits {
+    stdout_max: Some(4 * 1024 * 1024),
+    stderr_max: Some(4 * 1024 * 1024),
+    keep: CaptureKeep::Head,
+};
+
+/// SIGTERM grace before SIGKILL on a guest wall-clock timeout.
+const GUEST_TERM_GRACE: Duration = Duration::from_secs(1);
 
 /// Backend used for a job that omitted `isolation` (the `linux_native` floor).
 pub fn select_backend() -> Result<Backend, Failure> {
@@ -19,26 +34,40 @@ pub fn select_backend() -> Result<Backend, Failure> {
 /// Map a job's isolation floor onto a kekkai backend. Never returns a weaker
 /// tier than `required`.
 ///
-/// This pin health-checks `linux_native`. `userspace` and `kvm` stay
-/// runner failures until spawn (Issue #3).
+/// `linux_native` and `userspace` are health-checked. `kvm` stays a runner
+/// failure until kekkai ships that adapter. A missing guest helper never
+/// becomes `linux_native`.
 pub fn select_backend_for(required: IsolationTier) -> Result<(IsolationTier, Backend), Failure> {
     let linux = settings(Backend::LinuxNative, None, None, extra_readable_roots(&[]));
     let linux_health = kekkai::health(&linux);
+    let userspace = settings(Backend::Userspace, None, None, Vec::new());
+    let userspace_health = kekkai::health(&userspace);
     let mut available = Vec::new();
     if matches!(linux_health, Health::Ok(_)) {
         available.push(IsolationTier::LinuxNative);
     }
+    if matches!(userspace_health, Health::Ok(_)) {
+        available.push(IsolationTier::Userspace);
+    }
     match isolation::select_tier(required, &available) {
         Ok(IsolationTier::LinuxNative) => Ok((IsolationTier::LinuxNative, Backend::LinuxNative)),
-        Ok(tier) => Err(Failure::Runner(format!(
-            "sandbox backend {tier} cannot be applied"
-        ))),
+        Ok(IsolationTier::Userspace) => Ok((IsolationTier::Userspace, Backend::Userspace)),
+        Ok(IsolationTier::Kvm) => Err(Failure::Runner(
+            "sandbox backend kvm cannot be applied".into(),
+        )),
         Err(failure) => {
             if required == IsolationTier::LinuxNative
                 && let Health::Warning(message) | Health::Error(message) = linux_health
             {
                 return Err(Failure::Runner(format!(
                     "sandbox backend linux_native cannot be applied: {message}"
+                )));
+            }
+            if required == IsolationTier::Userspace
+                && let Health::Warning(message) | Health::Error(message) = userspace_health
+            {
+                return Err(Failure::Runner(format!(
+                    "sandbox backend userspace cannot be applied: {message}"
                 )));
             }
             Err(failure)
@@ -61,6 +90,7 @@ pub fn doctor_report() -> String {
         extra_readable_roots(&[]),
     ));
     let rlimit = kekkai::health(&settings(Backend::Rlimit, None, None, Vec::new()));
+    let userspace = kekkai::health(&settings(Backend::Userspace, None, None, Vec::new()));
     format!(
         "kako doctor\n\
          backend_selected: {selected}\n\
@@ -69,6 +99,7 @@ pub fn doctor_report() -> String {
          seccomp: {seccomp}\n\
          cgroup: {cgroup}\n\
          linux_native_health: {linux}\n\
+         userspace_health: {userspace}\n\
          rlimit_health: {rlimit}\n",
         rlimit_avail = if caps.rlimit {
             "available"
@@ -90,6 +121,7 @@ pub fn doctor_report() -> String {
             "unavailable"
         },
         linux = health_line(&linux),
+        userspace = health_line(&userspace),
         rlimit = health_line(&rlimit),
     )
 }
@@ -109,7 +141,7 @@ fn settings(
     memory_bytes: Option<u64>,
     readable_roots: Vec<PathBuf>,
 ) -> Settings {
-    Settings::builder()
+    let builder = Settings::builder()
         .backend(backend)
         .limits(Limits {
             cpu_time_secs,
@@ -120,12 +152,18 @@ fn settings(
             open_files: None,
         })
         .readable_roots(readable_roots)
-        .network(Network::Deny)
-        .cgroup(CgroupLimits {
-            memory_max: memory_bytes,
-            ..CgroupLimits::default()
-        })
-        .build()
+        .network(Network::Deny);
+    if matches!(backend, Backend::Userspace) {
+        // Guest spawn does not apply cgroup limits (kekkai Invalid).
+        builder.build()
+    } else {
+        builder
+            .cgroup(CgroupLimits {
+                memory_max: memory_bytes,
+                ..CgroupLimits::default()
+            })
+            .build()
+    }
 }
 
 fn extra_readable_roots(extra: &[PathBuf]) -> Vec<PathBuf> {
@@ -194,10 +232,32 @@ fn fs_canonicalize(path: &Path) -> io::Result<PathBuf> {
     path.canonicalize()
 }
 
+/// Copy the worker into `scratch` so a guest payload lives on the workspace
+/// mount. Never hard-link: scratch is writable.
+pub(crate) fn stage_guest_worker(worker: &Path, scratch: &Path) -> Result<PathBuf, Failure> {
+    let dest = scratch.join("kako-worker");
+    fs::copy(worker, &dest)
+        .map_err(|error| Failure::Runner(format!("copy guest worker: {error}")))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&dest)
+            .map_err(|error| Failure::Runner(format!("guest worker metadata: {error}")))?
+            .permissions();
+        perms.set_mode(perms.mode() | 0o111);
+        fs::set_permissions(&dest, perms)
+            .map_err(|error| Failure::Runner(format!("guest worker permissions: {error}")))?;
+    }
+    Ok(dest)
+}
+
 /// Spawn `command` under kekkai, wait up to `wall_clock`, kill the group on timeout.
 ///
 /// `extra_readable` grants the worker binary and interpreter prefixes under
-/// `linux_native`. `/usr` and `/sys` are skipped.
+/// `linux_native`. `/usr` and `/sys` are skipped. `userspace` takes those
+/// extra paths as kekkai `--readable` only (Python interpreter prefixes);
+/// the workspace is the per-run scratch directory. `apply()` is invalid for
+/// `userspace`; spawn goes through the guest helper.
 pub fn run_sandboxed(
     mut command: Command,
     scratch: &Path,
@@ -207,13 +267,18 @@ pub fn run_sandboxed(
     memory_bytes: Option<u64>,
     extra_readable: &[PathBuf],
 ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>, ChildUsage), Failure> {
-    let deadline = Instant::now()
+    Instant::now()
         .checked_add(wall_clock)
         .ok_or_else(|| Failure::Runner("wall-clock timeout overflows the runner clock".into()))?;
-    let readable = if matches!(backend, Backend::LinuxNative) {
-        extra_readable_roots(extra_readable)
-    } else {
-        Vec::new()
+    if matches!(backend, Backend::Userspace) && memory_bytes.is_some() {
+        return Err(Failure::Runner(
+            "memory limit cannot be set: cgroup limits are not applied by backend userspace".into(),
+        ));
+    }
+    let readable = match backend {
+        Backend::LinuxNative => extra_readable_roots(extra_readable),
+        Backend::Userspace => guest_readable_roots(extra_readable),
+        _ => Vec::new(),
     };
     let prepared = settings(backend, cpu_time_secs, memory_bytes, readable);
     if memory_bytes.is_some()
@@ -223,17 +288,76 @@ pub fn run_sandboxed(
             "memory limit cannot be set: {message}"
         )));
     }
-    let sandbox = Sandbox::prepare(&prepared, scratch)
-        .map_err(|error| Failure::Runner(format!("sandbox cannot be applied: {error}")))?;
-    sandbox
-        .apply(&mut command)
-        .map_err(|error| Failure::Runner(format!("sandbox cannot be applied: {error}")))?;
+    let sandbox = Sandbox::prepare(&prepared, scratch).map_err(|error| {
+        if matches!(backend, Backend::Userspace) {
+            Failure::Runner(format!(
+                "sandbox backend userspace cannot be applied: {error}"
+            ))
+        } else {
+            Failure::Runner(format!("sandbox cannot be applied: {error}"))
+        }
+    })?;
     command.current_dir(scratch);
     let tmp = scratch.join("tmp");
     command.env("HOME", scratch);
     command.env("TMPDIR", &tmp);
     command.env("TMP", &tmp);
     command.env("TEMP", &tmp);
+    if matches!(backend, Backend::Userspace) {
+        return run_userspace(sandbox, command, wall_clock);
+    }
+    run_in_process(sandbox, command, wall_clock)
+}
+
+fn guest_readable_roots(extra: &[PathBuf]) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    for path in extra {
+        if too_broad(path) {
+            continue;
+        }
+        if path.is_file() {
+            push_executable(&mut roots, path);
+        } else {
+            push_existing(&mut roots, path);
+        }
+    }
+    roots.sort();
+    roots.dedup();
+    roots
+}
+
+fn run_userspace(
+    sandbox: Sandbox,
+    mut command: Command,
+    wall_clock: Duration,
+) -> Result<(ExitStatus, Vec<u8>, Vec<u8>, ChildUsage), Failure> {
+    let (status, usage, stdout, stderr) = sandbox
+        .spawn_with_deadline_captured(&mut command, wall_clock, GUEST_TERM_GRACE, GUEST_CAPTURE)
+        .map_err(|error| {
+            Failure::Runner(format!(
+                "sandbox backend userspace cannot be applied: {error}"
+            ))
+        })?;
+    if usage.timed_out {
+        return Err(Failure::Limit(format!(
+            "wall-clock timeout after {}ms",
+            wall_clock.as_millis()
+        )));
+    }
+    Ok((status, stdout.bytes, stderr.bytes, usage))
+}
+
+fn run_in_process(
+    sandbox: Sandbox,
+    mut command: Command,
+    wall_clock: Duration,
+) -> Result<(ExitStatus, Vec<u8>, Vec<u8>, ChildUsage), Failure> {
+    let deadline = Instant::now()
+        .checked_add(wall_clock)
+        .ok_or_else(|| Failure::Runner("wall-clock timeout overflows the runner clock".into()))?;
+    sandbox
+        .apply(&mut command)
+        .map_err(|error| Failure::Runner(format!("sandbox cannot be applied: {error}")))?;
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
 
@@ -318,6 +442,7 @@ pub fn probe_network_exit() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn guest_backend_type_is_nameable() {
@@ -372,6 +497,7 @@ mod tests {
         let report = doctor_report();
         assert!(report.contains("backend_selected:"), "{report}");
         assert!(report.contains("linux_native_health:"), "{report}");
+        assert!(report.contains("userspace_health:"), "{report}");
         match select_backend() {
             Ok(backend) => {
                 assert_eq!(backend, Backend::LinuxNative);
@@ -388,14 +514,142 @@ mod tests {
         }
     }
 
+    fn userspace_health_ok() -> bool {
+        matches!(
+            kekkai::health(&settings(Backend::Userspace, None, None, Vec::new())),
+            Health::Ok(_)
+        )
+    }
+
     #[test]
     fn userspace_floor_does_not_select_linux_native() {
         match select_backend_for(IsolationTier::Userspace) {
+            Ok((IsolationTier::Userspace, Backend::Userspace)) => {}
             Err(Failure::Runner(message)) => {
                 assert!(message.contains("userspace"), "{message}");
             }
             other => panic!("unexpected backend {other:?}"),
         }
+    }
+
+    #[test]
+    fn userspace_run_fails_closed_without_helper() {
+        if userspace_health_ok() {
+            return;
+        }
+        let scratch = tempfile::tempdir().unwrap();
+        let command = Command::new("true");
+        let error = run_sandboxed(
+            command,
+            scratch.path(),
+            Backend::Userspace,
+            Duration::from_secs(1),
+            None,
+            None,
+            &[],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Failure::Runner(ref message) if message.contains("userspace")),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn userspace_memory_cap_fails_closed() {
+        let scratch = tempfile::tempdir().unwrap();
+        let command = Command::new("true");
+        let error = run_sandboxed(
+            command,
+            scratch.path(),
+            Backend::Userspace,
+            Duration::from_secs(1),
+            None,
+            Some(1024 * 1024),
+            &[],
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Failure::Runner(ref message) if message.contains("memory limit")),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn stage_guest_worker_copies_into_scratch() {
+        let scratch = tempfile::tempdir().unwrap();
+        let src = scratch.path().join("src-bin");
+        fs::write(&src, b"#!/bin/sh\n").unwrap();
+        let dest = stage_guest_worker(&src, scratch.path()).unwrap();
+        assert_eq!(dest, scratch.path().join("kako-worker"));
+        assert_eq!(fs::read(&dest).unwrap(), b"#!/bin/sh\n");
+        assert_ne!(dest, src);
+    }
+
+    /// Requires Linux, `linux_native` health, and `kekkai-guest` on PATH or
+    /// `KEKKAI_GUEST_HELPER`. Offline `cargo test` skips this.
+    #[test]
+    #[ignore = "needs kekkai-guest helper; set KEKKAI_GUEST_HELPER"]
+    fn guest_payload_cannot_read_a_host_secret() {
+        let scratch = tempfile::tempdir().unwrap();
+        let secret_dir = tempfile::tempdir().unwrap();
+        let secret = secret_dir.path().join("credentials");
+        fs::write(&secret, "guest-escape-token").unwrap();
+        let mut command = Command::new("cat");
+        command.arg(&secret);
+        let (status, stdout, stderr, _) = run_sandboxed(
+            command,
+            scratch.path(),
+            Backend::Userspace,
+            Duration::from_secs(5),
+            None,
+            None,
+            &[],
+        )
+        .expect("guest helper must spawn");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
+        assert!(
+            !combined.contains("guest-escape-token"),
+            "guest read host secret: {combined}"
+        );
+        assert!(!status.success(), "cat of host secret must fail");
+    }
+
+    /// Requires Linux, `linux_native` health, and `kekkai-guest` on PATH or
+    /// `KEKKAI_GUEST_HELPER`. Offline `cargo test` skips this.
+    #[test]
+    #[ignore = "needs kekkai-guest helper; set KEKKAI_GUEST_HELPER"]
+    fn guest_payload_cannot_read_another_run_directory() {
+        let scratch = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let leaked = other.path().join("other-run.txt");
+        fs::write(&leaked, "other-run-bytes").unwrap();
+        let mut command = Command::new("cat");
+        command.arg(&leaked);
+        let (status, stdout, stderr, _) = run_sandboxed(
+            command,
+            scratch.path(),
+            Backend::Userspace,
+            Duration::from_secs(5),
+            None,
+            None,
+            &[],
+        )
+        .expect("guest helper must spawn");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
+        assert!(
+            !combined.contains("other-run-bytes"),
+            "guest read another run: {combined}"
+        );
+        assert!(!status.success(), "cat of another run must fail");
     }
 
     #[cfg(unix)]

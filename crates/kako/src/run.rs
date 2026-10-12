@@ -120,7 +120,12 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
 
     let (isolation, backend) = sandbox::select_backend_for(job.isolation)?;
     let cpu_time_secs = Some(cpu_limit_secs(job)?);
-    let mut command = Command::new(&config.worker);
+    let worker = if matches!(backend, kekkai::Backend::Userspace) {
+        sandbox::stage_guest_worker(&config.worker, scratch.path())?
+    } else {
+        config.worker.clone()
+    };
+    let mut command = Command::new(&worker);
     command.arg("--internal-execute").arg(scratch.path());
     let mut extra_readable = if let Some(ref interpreter) = python {
         command.env("KAKO_PYTHON", interpreter);
@@ -136,7 +141,9 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
     {
         extra_readable.push(site.clone());
     }
-    extra_readable.push(config.worker.clone());
+    if !matches!(backend, kekkai::Backend::Userspace) {
+        extra_readable.push(config.worker.clone());
+    }
     let (status, stdout, stderr, usage) = sandbox::run_sandboxed(
         command,
         scratch.path(),
@@ -257,11 +264,19 @@ fn classify_worker(
 
 /// kekkai sets `RLIMIT_CPU` soft and hard to the same value, so a CPU cap
 /// on Linux is SIGKILL. SIGXCPU is the soft-limit signal when they differ.
+/// The guest helper rewrites payload signals as `128 + sig` exit codes.
 fn resource_limit_signal(status: std::process::ExitStatus) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::process::ExitStatusExt;
-        matches!(status.signal(), Some(libc::SIGXCPU | libc::SIGKILL))
+        if matches!(status.signal(), Some(libc::SIGXCPU | libc::SIGKILL)) {
+            return true;
+        }
+        matches!(
+            status.code(),
+            Some(code)
+                if code == 128 + libc::SIGKILL || code == 128 + libc::SIGXCPU
+        )
     }
     #[cfg(not(unix))]
     {
@@ -357,6 +372,9 @@ mod tests {
 
     #[test]
     fn userspace_floor_fails_closed_before_scratch() {
+        if sandbox::select_backend_for(crate::IsolationTier::Userspace).is_ok() {
+            return;
+        }
         let parent = tempfile::tempdir().unwrap();
         let job = Job {
             id: "guest".into(),
@@ -383,7 +401,7 @@ mod tests {
                 assert!(message.contains("userspace"), "{message}");
             }
             Err(other) => panic!("expected runner failure, got {other}"),
-            Ok(_) => panic!("userspace floor must fail closed until the guest pin"),
+            Ok(_) => panic!("userspace floor must fail closed when guest health fails"),
         }
         let leftovers: Vec<_> = fs::read_dir(parent.path())
             .unwrap()
@@ -574,6 +592,23 @@ mod tests {
             assert!(
                 matches!(failure, Failure::Limit(ref message) if message.contains("limit:")),
                 "{sig}: {failure}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guest_helper_encoded_cpu_signals_are_limit_failures() {
+        for sig in [libc::SIGKILL, libc::SIGXCPU] {
+            let code = 128 + sig;
+            let status = Command::new("sh")
+                .args(["-c", &format!("exit {code}")])
+                .status()
+                .unwrap();
+            let failure = classify_worker(status, b"", b"", false).unwrap();
+            assert!(
+                matches!(failure, Failure::Limit(ref message) if message.contains("limit:")),
+                "exit {code}: {failure}"
             );
         }
     }
