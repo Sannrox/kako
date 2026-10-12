@@ -100,7 +100,9 @@ the sandbox reports them.
   ([ADR 0006](docs/decisions/0006-python-package-policy.md)). Receipts
   record the image that ran. Operators keep prior images in
   `KAKO_PYTHON_IMAGES`. Set `KAKO_PYTHON` when the interpreter is not on
-  `PATH`.
+  `PATH`. CI sets `KAKO_REQUIRE_PYTHON=1` so Python engine tests fail
+  instead of skip, delegates a cgroup subtree for memory jobs, and
+  builds the runtime image from the lockfile.
 
 Adding or switching an engine is opt-in behind the bar in
 [docs/engine-requirements.md](docs/engine-requirements.md)

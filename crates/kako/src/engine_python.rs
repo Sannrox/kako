@@ -15,6 +15,11 @@ use crate::engine::StagedInput;
 const WRAPPER: &str = include_str!("../../../runtime/python/kako_run.py");
 const LOCKFILE: &[u8] = include_bytes!("../../../runtime/python/requirements.txt");
 
+/// CI sets `KAKO_REQUIRE_PYTHON=1` so a missing runtime is a failure, not a skip.
+pub(crate) fn python_tests_required() -> bool {
+    matches!(std::env::var("KAKO_REQUIRE_PYTHON"), Ok(value) if value == "1")
+}
+
 /// Receipt identity for the baked Python package set: lockfile SHA-256.
 pub fn runtime_image_id() -> String {
     format!("python-lockfile:{}", lockfile_digest().0)
@@ -337,11 +342,18 @@ mod tests {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/engine-bar")
     }
 
+    fn skip_python(reason: &str) {
+        if python_tests_required() {
+            panic!("python test required (KAKO_REQUIRE_PYTHON=1): {reason}");
+        }
+        eprintln!("skip: {reason}");
+    }
+
     fn skip_without_python() -> Option<PathBuf> {
         match resolve_interpreter() {
             Ok(path) => Some(path),
             Err(error) => {
-                eprintln!("skip: python runtime unavailable: {error}");
+                skip_python(&format!("python runtime unavailable: {error}"));
                 None
             }
         }
@@ -657,7 +669,7 @@ def transform(inputs):
         match kekkai::health(&settings) {
             kekkai::Health::Ok(_) => {}
             other => {
-                eprintln!("skip: rlimit backend unavailable: {other:?}");
+                skip_python(&format!("rlimit backend unavailable: {other:?}"));
                 return;
             }
         }

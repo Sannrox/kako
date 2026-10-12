@@ -135,6 +135,15 @@ fn health_line(health: &Health) -> String {
     }
 }
 
+/// Delegated cgroup v2 directory from `KAKO_CGROUP_ROOT`. CI creates one
+/// because the hosted runner's own cgroup is not writable.
+fn cgroup_root() -> Option<PathBuf> {
+    match std::env::var_os("KAKO_CGROUP_ROOT") {
+        Some(value) if !value.is_empty() => Some(PathBuf::from(value)),
+        _ => None,
+    }
+}
+
 fn settings(
     backend: Backend,
     cpu_time_secs: Option<u64>,
@@ -162,6 +171,7 @@ fn settings(
                 memory_max: memory_bytes,
                 ..CgroupLimits::default()
             })
+            .cgroup_root(cgroup_root())
             .build()
     }
 }
