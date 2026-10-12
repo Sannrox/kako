@@ -13,7 +13,7 @@ pub enum IsolationTier {
     /// shares the host kernel and the runner's OS user.
     #[default]
     LinuxNative,
-    /// kekkai `Backend::Userspace`. Spawn is Issue #3; the pin is Issue #33.
+    /// kekkai `Backend::Userspace`. Spawned through the guest helper.
     Userspace,
     /// KVM/microVM, only after kekkai ships that backend.
     Kvm,

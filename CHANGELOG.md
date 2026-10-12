@@ -9,8 +9,9 @@ uses [Semantic Versioning](https://semver.org/).
 ### Changed
 
 - kekkai pin moves to `73e24f580ed6223b7e8395793e6f2317eb8edfd9` (includes the
-  userspace guest adapter). `kako run` / `kako doctor` still select
-  `linux_native` and still fail closed when that backend cannot be applied.
+  userspace guest adapter). Default jobs still select `linux_native`. Jobs
+  that require `userspace` spawn through the guest helper, or fail closed
+  when guest health cannot be applied.
 
 ### Added
 
@@ -19,6 +20,12 @@ uses [Semantic Versioning](https://semver.org/).
   cannot meet is a runner failure, with no silent downgrade
   ([ADR 0009](docs/decisions/0009-isolation-tier.md)). Receipt JSON is
   `receipt_version` 3.
+
+- Jobs with `isolation: userspace` prepare kekkai `Backend::Userspace` and
+  spawn through `kekkai-guest` (or `KEKKAI_GUEST_HELPER`): per-run scratch
+  as the workspace, no network, job CPU and wall-clock limits. A missing
+  helper or failed guest health is a runner failure with no outputs. Escape
+  tests that need the helper are `#[ignore]` in offline `cargo test`.
 
 - Tagged GitHub releases package the runner binary, SQL and Python runtime
   images, checksums, and artifact attestations. Crates stay unpublished

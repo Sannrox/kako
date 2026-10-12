@@ -44,8 +44,10 @@ kako run job.json --require-identity
 
 `kako doctor` prints host capabilities. `kako run` uses kekkai `linux_native`
 (Landlock filesystem allowlist and seccomp network deny) unless the job
-sets a stronger `isolation` floor. If the required tier cannot be applied,
-the run fails closed. There is no silent downgrade.
+sets a stronger `isolation` floor. `userspace` requires Linux, `linux_native`
+health, and the `kekkai-guest` helper on `PATH` or `KEKKAI_GUEST_HELPER`.
+If the required tier cannot be applied, the run fails closed. There is no
+silent downgrade.
 
 A job file is JSON:
 
