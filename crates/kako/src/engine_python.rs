@@ -646,12 +646,14 @@ def transform(inputs):
         .unwrap();
         fs::write(scratch.path().join("user.py"), &code).unwrap();
         fs::write(scratch.path().join("kako_run.py"), WRAPPER).unwrap();
-        let mut settings = kekkai::Settings {
-            backend: kekkai::Backend::Rlimit,
-            network: kekkai::Network::Deny,
-            ..kekkai::Settings::default()
-        };
-        settings.limits.memory_mb = Some(256);
+        let settings = kekkai::Settings::builder()
+            .backend(kekkai::Backend::Rlimit)
+            .network(kekkai::Network::Deny)
+            .limits(kekkai::Limits {
+                memory_mb: Some(256),
+                ..kekkai::Limits::default()
+            })
+            .build();
         match kekkai::health(&settings) {
             kekkai::Health::Ok(_) => {}
             other => {
