@@ -36,7 +36,9 @@ Run the narrowest useful checks first, then expand according to change risk.
    cargo fmt --all -- --check
    cargo build --locked --workspace --all-targets
    cargo clippy --locked --workspace --all-targets -- -D warnings
+   cargo clippy --locked -p kako-source-sekai --features sekai-client --all-targets -- -D warnings
    cargo test --locked --workspace
+   cargo test --locked -p kako-source-sekai --features sekai-client
    bash scripts/validate-workflow-skills.sh
    ```
 

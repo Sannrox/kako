@@ -11,8 +11,8 @@ hashes the outputs, and reports outputs and a receipt back to the source. The
 workspace has crates along those boundaries ([ADR 0010](docs/decisions/0010-crate-graph.md)):
 `kako-core` (types, receipts, staging, manifest), `kako-sandbox` (kekkai),
 `kako-engine-duckdb` / `kako-engine-mizuchi` / `kako-engine-python`,
-`kako-worker` (`--internal-execute` dispatch), and `kako` (run loop, local
-source, CLI). The design is in
+`kako-worker` (`--internal-execute` dispatch), `kako-source-sekai` (optional
+Sekai isolated-process adapter), and `kako` (run loop, local source, CLI). The design is in
 [ADR 0002](docs/decisions/0002-sandboxed-transform-runner.md).
 
 Add new code along the crate boundaries above (job sources, staging, engines,
@@ -50,7 +50,9 @@ The compiler is pinned in `rust-toolchain.toml`. Local gates match CI
 cargo fmt --all -- --check
 cargo build --locked --workspace --all-targets
 cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo clippy --locked -p kako-source-sekai --features sekai-client --all-targets -- -D warnings
 cargo test --locked --workspace
+cargo test --locked -p kako-source-sekai --features sekai-client
 bash scripts/validate-workflow-skills.sh
 ```
 

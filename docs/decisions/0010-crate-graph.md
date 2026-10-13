@@ -37,7 +37,8 @@ the Python lockfile are unchanged. Crates stay unpublished (ADR 0008).
 
 - A run-loop edit no longer typechecks DuckDB or mizuchi sources.
 - A second job-source crate can depend on `kako-core` without pulling engine
-  weight.
+  weight. `kako-source-sekai` is that crate: the `sekai` feature on `kako`
+  pulls it, and `kako-core` stays free of Sekai.
 - The `kako` package still links `kako-worker` so `kako --internal-execute`
   works. Optional engine features and a separate CLI package are left for
   later if package-level fingerprints need thinning.
