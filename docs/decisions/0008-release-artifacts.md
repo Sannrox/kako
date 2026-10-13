@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-12
-- Relates: [0005](0005-python-runtime-image.md), [0006](0006-python-package-policy.md)
+- Relates: [0005](0005-python-runtime-image.md), [0006](0006-python-package-policy.md), [0011](0011-runner-pool-drain.md)
 - Source: [Issue #31](https://github.com/Sannrox/kako/issues/31)
 
 ## Context
@@ -46,7 +46,7 @@ pool's health and drain are a separate Issue.
   not by a registry location.
 - Cutting a tag is a maintainer action. This decision records the artifacts
   and the workflow; it does not cut a version.
-- Runner-pool drain and rollback stay out of band until that Issue lands.
+- Runner-pool drain and rollback are [ADR 0011](0011-runner-pool-drain.md).
 
 ## Alternatives considered
 

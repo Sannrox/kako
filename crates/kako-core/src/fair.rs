@@ -65,4 +65,62 @@ impl JobSource for FairSource {
     fn fail(&mut self, _: &Job, _: &Failure) -> Result<(), Self::Error> {
         Ok(())
     }
+
+    fn release(&mut self, job: &Job) -> Result<(), Self::Error> {
+        let Ok(key) = QuotaKey::from_job(job) else {
+            return Ok(());
+        };
+        if !self.by_owner.contains_key(&key) {
+            self.order.push(key.clone());
+        }
+        self.by_owner
+            .entry(key)
+            .or_default()
+            .push_front(job.clone());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Engine, IsolationTier, Job, WriteMode};
+    use std::time::Duration;
+
+    fn sample(id: &str, tenant: &str) -> Job {
+        Job {
+            id: id.into(),
+            engine: Engine::DuckDbSql,
+            code: "SELECT 1".into(),
+            inputs: Vec::new(),
+            outputs: vec!["out.csv".into()],
+            write_mode: WriteMode::Overwrite,
+            wall_clock: Duration::from_secs(1),
+            cpu_time: None,
+            memory_bytes: None,
+            tenant_id: tenant.into(),
+            namespace: "default".into(),
+            runtime_image: None,
+            isolation: IsolationTier::LinuxNative,
+        }
+    }
+
+    #[test]
+    fn release_returns_the_job_to_the_front_of_its_owner_queue() {
+        let mut source = FairSource::new([
+            sample("a1", "alpha"),
+            sample("a2", "alpha"),
+            sample("b", "beta"),
+        ])
+        .unwrap();
+        let first = source.next_job().unwrap().unwrap();
+        assert_eq!(first.id, "a1");
+        source.release(&first).unwrap();
+        // Round-robin still gives beta the next slot; the handed-back job
+        // is first when alpha's turn comes around.
+        assert_eq!(source.next_job().unwrap().unwrap().id, "b");
+        assert_eq!(source.next_job().unwrap().unwrap().id, "a1");
+        assert_eq!(source.next_job().unwrap().unwrap().id, "a2");
+        assert!(source.next_job().unwrap().is_none());
+    }
 }

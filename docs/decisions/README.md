@@ -14,5 +14,6 @@ Decisions that must outlive a single PR.
 | [0008](0008-release-artifacts.md) | Releases ship GitHub artifacts; crates stay unpublished | Accepted |
 | [0009](0009-isolation-tier.md) | Isolation-tier selection is a job-source floor; kako fails closed | Accepted |
 | [0010](0010-crate-graph.md) | Workspace crates follow runner subsystems | Accepted |
+| [0011](0011-runner-pool-drain.md) | Runner pool health, drain, and rollback | Accepted |
 
 Template: short context, decision, consequences, rejected alternatives.

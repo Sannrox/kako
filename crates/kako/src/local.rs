@@ -147,6 +147,16 @@ impl JobSource for LocalSource {
         let _ = fs::remove_file(self.output_dir.join("receipt.json"));
         Ok(())
     }
+
+    fn release(&mut self, job: &Job) -> Result<(), Self::Error> {
+        if self.job.is_some() {
+            return Err(LocalError(
+                "cannot hand back a job while another is already queued".into(),
+            ));
+        }
+        self.job = Some(job.clone());
+        Ok(())
+    }
 }
 
 fn reject_symlink(path: &Path) -> Result<(), LocalError> {
@@ -911,5 +921,30 @@ mod tests {
         source.fail(&job, &Failure::Job("nope".into())).unwrap();
         assert!(!out.join("receipt.json").exists());
         assert!(out.join("failure.txt").exists());
+    }
+
+    #[test]
+    fn release_requeues_without_writing_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.csv"), "a\n1\n").unwrap();
+        let job_path = dir.path().join("job.json");
+        fs::write(
+            &job_path,
+            r#"{
+              "sql": "SELECT 1",
+              "inputs": {"in": "in.csv"},
+              "outputs": ["out.csv"]
+            }"#,
+        )
+        .unwrap();
+        let out = dir.path().join("out");
+        let mut source = LocalSource::from_job_file(&job_path, out.clone()).unwrap();
+        let job = source.next_job().unwrap().unwrap();
+        source.release(&job).unwrap();
+        assert!(!out.join("receipt.json").exists());
+        assert!(!out.join("failure.txt").exists());
+        let again = source.next_job().unwrap().unwrap();
+        assert_eq!(again.id, job.id);
+        assert!(source.next_job().unwrap().is_none());
     }
 }

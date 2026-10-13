@@ -18,6 +18,7 @@ pub use kako_sandbox as sandbox;
 
 pub mod engine;
 pub mod local;
+pub mod pool;
 pub mod run;
 
 #[cfg(feature = "sekai")]

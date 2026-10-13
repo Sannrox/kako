@@ -246,6 +246,12 @@ pub trait JobSource {
 
     /// Report a failed run.
     fn fail(&mut self, job: &Job, failure: &Failure) -> Result<(), Self::Error>;
+
+    /// Return a claimed job without `complete` or `fail`.
+    ///
+    /// Drain uses this so the source stays the retry authority. Sources that
+    /// cannot restore the claim must return an error. Do not write outputs.
+    fn release(&mut self, job: &Job) -> Result<(), Self::Error>;
 }
 
 #[cfg(test)]
@@ -274,10 +280,34 @@ mod tests {
         fn fail(&mut self, _: &Job, _: &Failure) -> Result<(), Never> {
             Ok(())
         }
+        fn release(&mut self, _: &Job) -> Result<(), Never> {
+            Ok(())
+        }
     }
 
     #[test]
     fn empty_source_yields_no_job() {
+        assert_eq!(Empty.next_job().unwrap(), None);
+    }
+
+    #[test]
+    fn empty_release_is_a_noop() {
+        let job = Job {
+            id: "idle".into(),
+            engine: Engine::DuckDbSql,
+            code: "SELECT 1".into(),
+            inputs: Vec::new(),
+            outputs: vec!["out.csv".into()],
+            write_mode: WriteMode::Overwrite,
+            wall_clock: Duration::from_secs(1),
+            cpu_time: None,
+            memory_bytes: None,
+            tenant_id: "local".into(),
+            namespace: "default".into(),
+            runtime_image: None,
+            isolation: IsolationTier::LinuxNative,
+        };
+        Empty.release(&job).unwrap();
         assert_eq!(Empty.next_job().unwrap(), None);
     }
 
