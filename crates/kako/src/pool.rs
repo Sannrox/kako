@@ -5,7 +5,7 @@
 //! then finishes the current job or hands it back.
 
 use std::convert::Infallible;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -149,6 +149,8 @@ impl Drop for ProbeServer {
 }
 
 const MAX_PROBE_CONN: usize = 32;
+const PROBE_DEADLINE: Duration = Duration::from_secs(2);
+const PROBE_READ_SLICE: Duration = Duration::from_millis(100);
 
 fn probe_loop(listener: TcpListener, state: Arc<ProbeState>, shutdown: Arc<AtomicBool>) {
     let inflight = Arc::new(AtomicUsize::new(0));
@@ -186,8 +188,8 @@ const MAX_PROBE_HEAD: usize = 8192;
 fn handle_probe(mut stream: TcpStream, state: &ProbeState) {
     let _ = stream.set_nonblocking(false);
     let _ = stream.set_nodelay(true);
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-    let Some(first) = read_probe_request_line(&mut stream) else {
+    let _ = stream.set_read_timeout(Some(PROBE_READ_SLICE));
+    let Some(first) = read_probe_request_line(&mut stream, Instant::now() + PROBE_DEADLINE) else {
         return;
     };
     let mut parts = first.split_whitespace();
@@ -222,10 +224,13 @@ fn handle_probe(mut stream: TcpStream, state: &ProbeState) {
     }
 }
 
-fn read_probe_request_line(stream: &mut TcpStream) -> Option<String> {
+fn read_probe_request_line(stream: &mut TcpStream, deadline: Instant) -> Option<String> {
     let mut buf = [0u8; MAX_PROBE_HEAD];
     let mut filled = 0usize;
     loop {
+        if Instant::now() >= deadline {
+            return None;
+        }
         if filled == buf.len() {
             return None;
         }
@@ -239,6 +244,14 @@ fn read_probe_request_line(stream: &mut TcpStream) -> Option<String> {
                 {
                     break;
                 }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::WouldBlock | ErrorKind::TimedOut | ErrorKind::Interrupted
+                ) =>
+            {
+                continue;
             }
             Err(_) => return None,
         }
@@ -485,38 +498,35 @@ mod tests {
         }
     }
 
+    fn try_http_get(addr: SocketAddr, path: &str) -> Option<(u16, String)> {
+        let mut stream = TcpStream::connect(addr).ok()?;
+        let _ = stream.set_nodelay(true);
+        stream
+            .set_read_timeout(Some(Duration::from_millis(200)))
+            .ok()?;
+        write!(
+            stream,
+            "GET {path} HTTP/1.1\r\nHost: probe\r\nConnection: close\r\n\r\n"
+        )
+        .ok()?;
+        stream.flush().ok()?;
+        let mut buf = String::new();
+        let _ = stream.read_to_string(&mut buf);
+        let status = buf.split_whitespace().nth(1).and_then(|s| s.parse().ok())?;
+        let body = buf.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+        Some((status, body))
+    }
+
     fn http_get(addr: SocketAddr, path: &str) -> (u16, String) {
         let mut last = String::new();
         for _ in 0..50 {
-            match TcpStream::connect(addr) {
-                Ok(mut stream) => {
-                    let _ = stream.set_nodelay(true);
-                    stream
-                        .set_read_timeout(Some(Duration::from_secs(2)))
-                        .unwrap();
-                    if write!(
-                        stream,
-                        "GET {path} HTTP/1.1\r\nHost: probe\r\nConnection: close\r\n\r\n"
-                    )
-                    .is_err()
-                        || stream.flush().is_err()
-                    {
-                        last = "write failed".into();
-                        thread::sleep(Duration::from_millis(10));
-                        continue;
-                    }
-                    let mut buf = String::new();
-                    let _ = stream.read_to_string(&mut buf);
-                    if let Some(status) = buf.split_whitespace().nth(1).and_then(|s| s.parse().ok())
-                    {
-                        let body = buf.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
-                        return (status, body);
-                    }
-                    last = buf;
+            match try_http_get(addr, path) {
+                Some(result) => return result,
+                None => {
+                    last = "probe request failed".into();
+                    thread::sleep(Duration::from_millis(10));
                 }
-                Err(error) => last = error.to_string(),
             }
-            thread::sleep(Duration::from_millis(10));
         }
         panic!("probe GET {path} at {addr} failed: {last:?}");
     }
@@ -556,6 +566,41 @@ mod tests {
             started.elapsed() < Duration::from_secs(1),
             "slow client blocked probes for {:?}",
             started.elapsed()
+        );
+        drop(slow);
+        server.shutdown();
+    }
+
+    #[test]
+    fn probe_deadline_frees_slots_after_slow_clients() {
+        let probes = Arc::new(ProbeState::new("1"));
+        let server = ProbeServer::bind(
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0),
+            probes.clone(),
+        )
+        .unwrap();
+        let addr = server.addr();
+        let mut slow = Vec::new();
+        for _ in 0..MAX_PROBE_CONN {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream.set_nodelay(true).unwrap();
+            write!(stream, "GET /health HTTP/1.1\r\n").unwrap();
+            stream.flush().unwrap();
+            slow.push(stream);
+        }
+        thread::sleep(Duration::from_millis(50));
+        let deadline = Instant::now() + PROBE_DEADLINE + Duration::from_millis(500);
+        let mut recovered = false;
+        while Instant::now() < deadline {
+            if try_http_get(addr, "/health").is_some_and(|result| result.0 == 200) {
+                recovered = true;
+                break;
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            recovered,
+            "probe slots did not free after the request deadline"
         );
         drop(slow);
         server.shutdown();
