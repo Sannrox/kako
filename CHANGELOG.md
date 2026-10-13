@@ -21,6 +21,11 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Optional `kako-source-sekai` crate: a `JobSource` adapter that claims
+  isolated-process work behind a fenced transport. Default tests use a fake
+  client so a lost fence aborts write-back and writes nothing. kako-core
+  stays free of Sekai (`sekai` feature on `kako`, #8).
+
 - Mizuchi jobs pass `write_mode` (`overwrite` or `append`) through to the
   adapter. COPY SQL writes a new CSV and rejects `append`; partitioned
   parquet writes honor both modes. Receipt snapshots stay identical across

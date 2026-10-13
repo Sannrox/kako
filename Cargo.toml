@@ -6,6 +6,7 @@ members = [
     "crates/kako-engine-mizuchi",
     "crates/kako-engine-python",
     "crates/kako-worker",
+    "crates/kako-source-sekai",
     "crates/kako",
 ]
 default-members = ["crates/kako"]
@@ -26,6 +27,7 @@ kako-engine-duckdb = { path = "crates/kako-engine-duckdb" }
 kako-engine-mizuchi = { path = "crates/kako-engine-mizuchi" }
 kako-engine-python = { path = "crates/kako-engine-python" }
 kako-worker = { path = "crates/kako-worker" }
+kako-source-sekai = { path = "crates/kako-source-sekai" }
 arrow = { version = "60.0.0", default-features = false, features = ["csv"] }
 duckdb = { version = "=1.10506.0", default-features = false, features = ["bundled", "parquet"] }
 kekkai = { git = "https://github.com/Sannrox/kekkai", rev = "73e24f580ed6223b7e8395793e6f2317eb8edfd9", default-features = false, features = ["guest"] }

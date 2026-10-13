@@ -123,8 +123,11 @@ to retry; kako only executes.
   outputs and the receipt to a directory. One-shot; it does not schedule.
 - **Fair share**: `FairSource` yields jobs round-robin by quota key so one
   owner's flood does not occupy every slot. Other adapters may reuse it.
-- **Sekai** ([sekai-chisei](https://github.com/Sannrox/sekai-chisei)): claim
-  transform runs from the Sekai control plane. One adapter among others.
+- **Sekai** ([sekai-chisei](https://github.com/Sannrox/sekai-chisei)): optional
+  `kako-source-sekai` adapter (`sekai` feature on `kako`) claims isolated-process
+  transform runs from the control plane. Fence loss aborts write-back. Live
+  proof against a plane is a later issue; this crate's default tests use a fake
+  claim client.
 
 ## Receipts
 

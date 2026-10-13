@@ -32,6 +32,31 @@ mod tests {
     #[test]
     fn core_carries_no_engine_or_sandbox_weight() {
         assert_no_weight("kako-core");
+        let toml = crate_toml("kako-core");
+        assert!(
+            !toml.contains("sekai-client") && !toml.contains("kako-source-sekai"),
+            "kako-core must not depend on the Sekai adapter:\n{toml}"
+        );
+    }
+
+    #[test]
+    fn sekai_adapter_stays_out_of_core_and_off_the_default_runner() {
+        let kako = crate_toml("kako");
+        assert!(
+            kako.contains("optional = true") && kako.contains("kako-source-sekai"),
+            "kako must take kako-source-sekai as an optional feature:\n{kako}"
+        );
+        let adapter = crate_toml("kako-source-sekai");
+        for dep in ["duckdb", "mizuchi", "arrow", "kekkai"] {
+            assert!(
+                !adapter.contains(dep),
+                "kako-source-sekai must not depend on {dep}:\n{adapter}"
+            );
+        }
+        assert!(
+            adapter.contains("optional = true") && adapter.contains("sekai-client"),
+            "sekai-client must stay optional on kako-source-sekai:\n{adapter}"
+        );
     }
 
     #[test]

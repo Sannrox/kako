@@ -20,6 +20,9 @@ pub mod engine;
 pub mod local;
 pub mod run;
 
+#[cfg(feature = "sekai")]
+pub use kako_source_sekai as sekai_source;
+
 /// When `KAKO_REQUIRE_PYTHON=1`, Python engine tests must run instead of skip.
 pub fn python_tests_required() -> bool {
     kako_engine_python::python_tests_required()

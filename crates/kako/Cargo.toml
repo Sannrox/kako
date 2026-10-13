@@ -10,8 +10,13 @@ keywords = ["etl", "duckdb", "sandbox", "data", "transform"]
 categories = ["command-line-utilities", "database"]
 homepage = "https://github.com/Sannrox/kako"
 
+[features]
+default = []
+sekai = ["dep:kako-source-sekai", "kako-source-sekai/sekai-client"]
+
 [dependencies]
 kako-core = { workspace = true }
+kako-source-sekai = { workspace = true, optional = true }
 kako-engine-python = { workspace = true }
 kako-sandbox = { workspace = true }
 kako-worker = { workspace = true }
