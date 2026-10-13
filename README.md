@@ -6,13 +6,16 @@ outputs together with a receipt describing exactly what ran.
 
 > Status: SQL MVP plus opt-in Python. Local jobs run DuckDB (default) or
 > Python in a [kekkai](https://github.com/Sannrox/kekkai) sandbox and write
-> outputs plus a receipt. External job sources are not implemented yet.
+> outputs plus a receipt. `kako serve` runs a pool process with health,
+> drain, and rollback onto the previous GitHub Release. The optional Sekai
+> adapter claims isolated-process work; live plane proof is a later issue.
 > See [ADR 0002](docs/decisions/0002-sandboxed-transform-runner.md),
 > [ADR 0005](docs/decisions/0005-python-runtime-image.md),
 > [ADR 0006](docs/decisions/0006-python-package-policy.md),
 > [ADR 0008](docs/decisions/0008-release-artifacts.md),
-> [ADR 0009](docs/decisions/0009-isolation-tier.md), and
-> [ADR 0010](docs/decisions/0010-crate-graph.md).
+> [ADR 0009](docs/decisions/0009-isolation-tier.md),
+> [ADR 0010](docs/decisions/0010-crate-graph.md), and
+> [ADR 0011](docs/decisions/0011-runner-pool-drain.md).
 
 ## How it works
 
@@ -41,6 +44,9 @@ kako doctor
 kako run job.json --output ./out
 kako run job.json --tenant local --namespace default
 kako run job.json --require-identity
+kako serve --listen <addr>
+kako serve --listen <addr> job.json --output ./out
+kako serve --listen <addr> --hand-back
 ```
 
 `kako doctor` prints host capabilities. `kako run` uses kekkai `linux_native`
@@ -79,6 +85,16 @@ Every job, receipt, and quota key carries `tenant_id` and `namespace`. The
 local CLI fills `local` / `default` when the job file omits them, or the
 values from `--tenant` / `--namespace`. `--require-identity` is the
 multi-tenant mode: both fields must be present on the job file.
+
+`kako serve` claims from the job source, serves `GET /health`, `GET /ready`,
+and `GET /version`, and drains on SIGTERM: readiness goes false immediately,
+health stays true while an in-flight job still runs, then the process exits.
+Ready means the process will claim work. A local job file is the one-shot
+source (`kako run` uses the same file); after that job finishes the process
+goes not-ready. Omit the file and it stays not-ready. `--hand-back` returns an in-flight job with `JobSource::release`
+instead of finishing it. kako does not retry; the source does
+([ADR 0011](docs/decisions/0011-runner-pool-drain.md)). Live Sekai claiming
+stays behind the `sekai` feature and a later plane-proof issue.
 
 The job source owns queueing, quotas, and fair share
 ([ADR 0004](docs/decisions/0004-quota-authority.md)). kako enforces the
@@ -125,9 +141,9 @@ to retry; kako only executes.
   owner's flood does not occupy every slot. Other adapters may reuse it.
 - **Sekai** ([sekai-chisei](https://github.com/Sannrox/sekai-chisei)): optional
   `kako-source-sekai` adapter (`sekai` feature on `kako`) claims isolated-process
-  transform runs from the control plane. Fence loss aborts write-back. Live
-  proof against a plane is a later issue; this crate's default tests use a fake
-  claim client.
+  transform runs from the control plane. Fence loss aborts write-back. Drain
+  can hand a claim back without writing. Live proof against a plane is a later
+  issue; this crate's default tests use a fake claim client.
 
 ## Receipts
 
@@ -172,6 +188,27 @@ bash scripts/release-dry-run.sh --out dist --with-images --with-site-packages
 the hashed lockfile into the catalog tree. `workflow_dispatch` and pull
 requests package artifacts without attesting or creating a GitHub Release.
 Attestations and the Release are tag-only (`v*`).
+
+## Runner pool
+
+A pool is N long-running kako processes, each claiming independently from a
+job source through `kako::pool::serve_source`. This repository does not pick
+a supervisor; a process manager, container orchestrator, or
+[Tenkai](https://github.com/Sannrox/tenkai) can watch `/health` and `/ready`.
+`kako serve` with a local job file claims that one-shot source, then goes
+not-ready. Without a job file it stays not-ready and only serves probes
+and drain. Live Sekai claiming is a later issue.
+
+Drain and replace one process at a time:
+
+1. Send SIGTERM. Readiness goes false; the process stops claiming.
+2. Wait until the process exits (health stays true while the current job
+   still runs). With `--hand-back`, that job returns to the source without
+   outputs.
+3. Start a replacement process with the same flags.
+
+To roll back, drain as above and start the previous `v*` GitHub Release
+binary instead of the newer one. The job source remains the retry authority.
 
 ## Development
 

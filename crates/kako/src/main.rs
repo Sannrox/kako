@@ -1,5 +1,6 @@
 //! kako (加工): sandboxed data-transform runner.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process;
 
@@ -8,6 +9,7 @@ kako: sandboxed data-transform runner
 
 USAGE:
     kako run <job.json> [--output <dir>] [--tenant <id>] [--namespace <ns>] [--require-identity]
+    kako serve --listen <addr> [--hand-back] [--idle-ms <n>] [<job.json>] [--output <dir>] [--tenant <id>] [--namespace <ns>] [--require-identity]
     kako doctor
     kako [--version | --help]
 
@@ -15,7 +17,10 @@ USAGE:
 outputs), runs it in a kekkai sandbox, and writes outputs plus receipt.json
 to the output directory (default: ./out). Jobs carry tenant_id and namespace
 (default local/default). --require-identity refuses a job file that omits
-either field. Python jobs set \"engine\": \"python\" and \"code\", and may pin \"runtime_image\".";
+either field. Python jobs set \"engine\": \"python\" and \"code\", and may pin \"runtime_image\".
+`kako serve` exposes /health, /ready, and /version, claims an optional local
+job file, and drains on SIGTERM. Without a job file the process stays
+not-ready.";
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -50,6 +55,12 @@ fn main() {
         Some("doctor") => print!("{}", kako::sandbox::doctor_report()),
         Some("run") => {
             if let Err(error) = cmd_run(args) {
+                eprintln!("kako: {error}");
+                process::exit(1);
+            }
+        }
+        Some("serve") => {
+            if let Err(error) = cmd_serve(args) {
                 eprintln!("kako: {error}");
                 process::exit(1);
             }
@@ -107,6 +118,108 @@ fn cmd_run(args: impl Iterator<Item = String>) -> Result<(), String> {
             return Err(format!("{job_id}: {failure}"));
         }
     }
+    Ok(())
+}
+
+fn cmd_serve(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let mut listen: Option<std::net::SocketAddr> = None;
+    let mut hand_back = false;
+    let mut idle_ms = 200u64;
+    let mut job_file: Option<PathBuf> = None;
+    let mut output = PathBuf::from("out");
+    let mut output_set = false;
+    let mut identity = kako::local::LocalIdentity::default();
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--listen" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --listen".to_string())?;
+                listen = Some(
+                    value
+                        .parse()
+                        .map_err(|error| format!("invalid --listen `{value}`: {error}"))?,
+                );
+            }
+            "--hand-back" => hand_back = true,
+            "--idle-ms" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --idle-ms".to_string())?;
+                idle_ms = value
+                    .parse()
+                    .map_err(|error| format!("invalid --idle-ms `{value}`: {error}"))?;
+            }
+            "--output" | "-o" => {
+                let dir = args
+                    .next()
+                    .ok_or_else(|| "missing value for --output".to_string())?;
+                output = PathBuf::from(dir);
+                output_set = true;
+            }
+            "--tenant" => {
+                identity.tenant_id = args
+                    .next()
+                    .ok_or_else(|| "missing value for --tenant".to_string())?;
+            }
+            "--namespace" => {
+                identity.namespace = args
+                    .next()
+                    .ok_or_else(|| "missing value for --namespace".to_string())?;
+            }
+            "--require-identity" => identity.require_job_identity = true,
+            s if s.starts_with('-') => return Err(format!("unknown flag `{s}`")),
+            s => {
+                if job_file.is_some() {
+                    return Err("multiple job files".into());
+                }
+                job_file = Some(PathBuf::from(s));
+            }
+        }
+    }
+    let listen = listen.ok_or_else(|| "missing --listen".to_string())?;
+    if job_file.is_none() && (output_set || identity != kako::local::LocalIdentity::default()) {
+        return Err("job identity and --output require a job file".into());
+    }
+    let probes = std::sync::Arc::new(kako::pool::ProbeState::new(env!("CARGO_PKG_VERSION")));
+    if job_file.is_none() {
+        probes.mark_not_ready();
+    }
+    let server = kako::pool::ProbeServer::bind(listen, probes.clone())
+        .map_err(|error| format!("bind {listen}: {error}"))?;
+    println!("listening on {}", server.addr());
+    let _ = std::io::stdout().flush();
+    let drain = kako::pool::DrainHandle::new(probes.clone());
+    kako::pool::install_process_drain_signals();
+    let scratch_parent = std::env::temp_dir();
+    let runner = kako::run::RunnerConfig::for_current_exe(scratch_parent)
+        .map_err(|error| error.to_string())?;
+    let config = kako::pool::ServeConfig {
+        runner,
+        idle: std::time::Duration::from_millis(idle_ms),
+        drain_mode: if hand_back {
+            kako::pool::DrainMode::HandBack
+        } else {
+            kako::pool::DrainMode::FinishCurrent
+        },
+        not_ready_when_empty: job_file.is_some(),
+    };
+    match job_file {
+        None => {
+            let mut source = kako::pool::IdleSource;
+            kako::pool::serve_source(&mut source, &config, &probes, &drain)
+                .map_err(|error| error.to_string())?;
+        }
+        Some(job_file) => {
+            let mut source =
+                kako::local::LocalSource::from_job_file_with(&job_file, output, identity)
+                    .map_err(|error| error.to_string())?;
+            kako::pool::serve_source(&mut source, &config, &probes, &drain)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    server.shutdown();
     Ok(())
 }
 

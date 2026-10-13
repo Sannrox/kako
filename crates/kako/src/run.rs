@@ -34,8 +34,17 @@ impl RunnerConfig {
 /// Outcome of one job after the source has been notified.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JobFinish {
-    Completed { job_id: String },
-    Failed { job_id: String, failure: Failure },
+    Completed {
+        job_id: String,
+    },
+    Failed {
+        job_id: String,
+        failure: Failure,
+    },
+    /// Drain handed the job back; the source was not told complete or fail.
+    Released {
+        job_id: String,
+    },
 }
 
 /// Pull jobs until the source is empty. Scratch trees are removed after
@@ -328,6 +337,10 @@ mod tests {
             self.fails.push(failure.clone());
             Ok(())
         }
+        fn release(&mut self, job: &Job) -> Result<(), Self::Error> {
+            self.jobs.insert(0, job.clone());
+            Ok(())
+        }
     }
 
     #[test]
@@ -569,6 +582,9 @@ mod tests {
         }
         fn fail(&mut self, job: &Job, failure: &Failure) -> Result<(), Self::Error> {
             self.inner.fail(job, failure)
+        }
+        fn release(&mut self, job: &Job) -> Result<(), Self::Error> {
+            self.inner.release(job)
         }
     }
 

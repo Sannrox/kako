@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-10-12
-- Relates: [0002](0002-sandboxed-transform-runner.md), [0008](0008-release-artifacts.md)
+- Relates: [0002](0002-sandboxed-transform-runner.md), [0008](0008-release-artifacts.md), [0011](0011-runner-pool-drain.md)
 - Source: [Issue #43](https://github.com/Sannrox/kako/issues/43)
 
 ## Context
@@ -25,7 +25,8 @@ boundaries as modules; the crate graph did not.
    **`kako-engine-python`** own in-process execute (and, for Python, the
    parent-side image catalog). Weight stays in the crate that calls it.
 4. **`kako-worker`** dispatches `--internal-execute` onto those engines.
-5. **`kako`** is the run loop, local job source, and CLI. It re-exports
+5. **`kako`** is the run loop, local job source, CLI, and long-running pool
+   serve ([ADR 0011](0011-runner-pool-drain.md)). It re-exports
    `kako-core` types at the existing `kako::` paths. The binary depends on
    `kako-worker` so the child can run SQL engines; the run-loop modules do
    not call DuckDB or mizuchi.

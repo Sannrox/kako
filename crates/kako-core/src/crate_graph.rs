@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn run_loop_sources_do_not_name_sql_engines() {
         let kako_src = workspace_root().join("crates/kako/src");
-        for file in ["lib.rs", "run.rs", "local.rs"] {
+        for file in ["lib.rs", "run.rs", "local.rs", "pool.rs"] {
             let text = fs::read_to_string(kako_src.join(file)).unwrap();
             for needle in ["duckdb::", "mizuchi::", "arrow::", "kekkai::"] {
                 assert!(

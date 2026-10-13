@@ -12,7 +12,8 @@ workspace has crates along those boundaries ([ADR 0010](docs/decisions/0010-crat
 `kako-core` (types, receipts, staging, manifest), `kako-sandbox` (kekkai),
 `kako-engine-duckdb` / `kako-engine-mizuchi` / `kako-engine-python`,
 `kako-worker` (`--internal-execute` dispatch), `kako-source-sekai` (optional
-Sekai isolated-process adapter), and `kako` (run loop, local source, CLI). The design is in
+Sekai isolated-process adapter), and `kako` (run loop, local source, CLI,
+pool serve). The design is in
 [ADR 0002](docs/decisions/0002-sandboxed-transform-runner.md).
 
 Add new code along the crate boundaries above (job sources, staging, engines,

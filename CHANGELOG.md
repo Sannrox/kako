@@ -21,6 +21,16 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `kako serve`: `/health`, `/ready`, and `/version` on a long-running
+  process; SIGTERM drains (stop claiming, finish the current job or hand it
+  back with `JobSource::release`, then exit). Ready means the process will
+  claim work. A local job file is claimed, then the process goes not-ready
+  when that one-shot source is empty; without a file it stays not-ready.
+  Probe connections are handled off the accept loop so a slow client cannot
+  stall `/health` or `/ready`. Rollback is the same drain path plus the
+  previous GitHub Release binary
+  ([ADR 0011](docs/decisions/0011-runner-pool-drain.md)).
+
 - Optional `kako-source-sekai` crate: a `JobSource` adapter that claims
   isolated-process work behind a fenced transport. Default tests use a fake
   client so a lost fence aborts write-back and writes nothing. kako-core

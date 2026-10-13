@@ -59,6 +59,17 @@ pub trait ClaimTransport {
         receipt: &Receipt,
     ) -> Result<(), SekaiSourceError>;
     fn report_failure(&mut self, fence: &Fence, failure: &Failure) -> Result<(), SekaiSourceError>;
+
+    /// Return the held claim to the source without write-back.
+    ///
+    /// Default fails closed. Adapters that can requeue must override and
+    /// must not call `write_outputs` or `report_failure`.
+    fn release(&mut self, fence: &Fence) -> Result<(), SekaiSourceError> {
+        let _ = fence;
+        Err(SekaiSourceError::Transport(
+            "claim transport does not support hand-back".into(),
+        ))
+    }
 }
 
 /// Job source that claims isolated-process work and writes back under the fence.
@@ -88,7 +99,7 @@ impl<T: ClaimTransport> SekaiSource<T> {
             .ok_or_else(|| SekaiSourceError::Transport("no held claim".into()))?;
         if fence.run_id != job.id {
             return Err(SekaiSourceError::Transport(
-                "complete/fail job does not match the held claim".into(),
+                "job does not match the held claim".into(),
             ));
         }
         Ok(fence)
@@ -145,12 +156,22 @@ impl<T: ClaimTransport> JobSource for SekaiSource<T> {
         }
         result
     }
+
+    fn release(&mut self, job: &Job) -> Result<(), Self::Error> {
+        let fence = self.require_held(job)?.clone();
+        let result = self.transport.release(&fence);
+        if result.is_ok() || matches!(result, Err(SekaiSourceError::FenceLost)) {
+            self.held = None;
+        }
+        result
+    }
 }
 
 /// In-memory claim transport for adapter tests.
 #[derive(Debug, Default)]
 pub struct FakeClaimTransport {
     queued: Option<ClaimedWork>,
+    held_work: Option<ClaimedWork>,
     fence_lost: bool,
     fence_lost_on_write: bool,
     heartbeat_error: Option<String>,
@@ -202,6 +223,7 @@ impl ClaimTransport for FakeClaimTransport {
                 "runtime_id does not match the claimed fence".into(),
             ));
         }
+        self.held_work = Some(claimed.clone());
         Ok(Some(claimed))
     }
 
@@ -226,6 +248,7 @@ impl ClaimTransport for FakeClaimTransport {
         }
         self.writes
             .extend(outputs.iter().map(|output| output.path.clone()));
+        self.held_work = None;
         Ok(())
     }
 
@@ -241,6 +264,30 @@ impl ClaimTransport for FakeClaimTransport {
             return Err(SekaiSourceError::Transport(message.clone()));
         }
         self.failures.push(failure.to_string());
+        self.held_work = None;
+        Ok(())
+    }
+
+    fn release(&mut self, fence: &Fence) -> Result<(), SekaiSourceError> {
+        if self.fence_lost {
+            self.held_work = None;
+            return Err(SekaiSourceError::FenceLost);
+        }
+        let work = self
+            .held_work
+            .as_ref()
+            .ok_or_else(|| SekaiSourceError::Transport("no held claim".into()))?;
+        if work.fence != *fence {
+            return Err(SekaiSourceError::Transport(
+                "release fence does not match the held claim".into(),
+            ));
+        }
+        if self.queued.is_some() {
+            return Err(SekaiSourceError::Transport(
+                "cannot hand back while another claim is queued".into(),
+            ));
+        }
+        self.queued = self.held_work.take();
         Ok(())
     }
 }
@@ -431,5 +478,99 @@ mod tests {
             .fail(&claimed, &Failure::Job("boom".into()))
             .unwrap_err();
         assert!(matches!(error, SekaiSourceError::Transport(message) if message == "unavailable"));
+    }
+
+    #[test]
+    fn release_requeues_without_write_back() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (job, fence) = sample_claimed_job(scratch.path(), "runner-a");
+        let mut source =
+            SekaiSource::new(FakeClaimTransport::with_job(job.clone(), fence), "runner-a");
+        let claimed = source.next_job().unwrap().expect("claimed");
+        source.release(&claimed).unwrap();
+        let again = source.next_job().unwrap().expect("requeued");
+        assert_eq!(again.id, claimed.id);
+        source
+            .complete(
+                &again,
+                &[Output {
+                    name: "out".into(),
+                    path: scratch.path().join("out.csv"),
+                    digest: Digest("sha256:out".into()),
+                }],
+                &receipt(&again),
+            )
+            .unwrap();
+        let transport = source.into_transport();
+        assert_eq!(transport.writes().len(), 1);
+        assert!(transport.failures().is_empty());
+    }
+
+    #[test]
+    fn complete_after_release_does_not_write() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (job, fence) = sample_claimed_job(scratch.path(), "runner-a");
+        let mut source =
+            SekaiSource::new(FakeClaimTransport::with_job(job.clone(), fence), "runner-a");
+        let claimed = source.next_job().unwrap().expect("claimed");
+        source.release(&claimed).unwrap();
+        let error = source
+            .complete(
+                &claimed,
+                &[Output {
+                    name: "out".into(),
+                    path: scratch.path().join("out.csv"),
+                    digest: Digest("sha256:out".into()),
+                }],
+                &receipt(&claimed),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, SekaiSourceError::Transport(message) if message.contains("no held claim"))
+        );
+        assert!(source.into_transport().writes().is_empty());
+    }
+
+    #[test]
+    fn failed_hand_back_keeps_the_held_claim() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (job, fence) = sample_claimed_job(scratch.path(), "runner-a");
+        let mut source =
+            SekaiSource::new(FakeClaimTransport::with_job(job.clone(), fence), "runner-a");
+        let claimed = source.next_job().unwrap().expect("claimed");
+        let mut extra = claimed.clone();
+        extra.id = "run-2".into();
+        source.transport.queued = Some(ClaimedWork {
+            fence: Fence {
+                run_id: "run-2".into(),
+                runtime_id: "runner-a".into(),
+                generation: 1,
+                fencing_token: "fence-2".into(),
+            },
+            job: extra,
+        });
+        let error = source.release(&claimed).unwrap_err();
+        assert!(
+            matches!(error, SekaiSourceError::Transport(ref message) if message.contains("queued")),
+            "{error}"
+        );
+        source.transport.queued = None;
+        source.release(&claimed).unwrap();
+        let again = source.next_job().unwrap().expect("requeued");
+        assert_eq!(again.id, claimed.id);
+        assert!(source.into_transport().writes().is_empty());
+    }
+
+    #[test]
+    fn lost_fence_on_release_does_not_requeue_or_write() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (job, fence) = sample_claimed_job(scratch.path(), "runner-a");
+        let mut source = SekaiSource::new(FakeClaimTransport::with_job(job, fence), "runner-a");
+        let claimed = source.next_job().unwrap().expect("claimed");
+        source.transport.lose_fence();
+        let error = source.release(&claimed).unwrap_err();
+        assert_eq!(error, SekaiSourceError::FenceLost);
+        assert!(source.next_job().unwrap().is_none());
+        assert!(source.into_transport().writes().is_empty());
     }
 }
