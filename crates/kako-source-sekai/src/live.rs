@@ -12,7 +12,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use kako_core::{Engine, Failure, Input, IsolationTier, Job, Output, Receipt, WriteMode};
-use sekai_client::claim::{RuntimeClaimError, TransformFence, TransformWrite};
+use sekai_client::claim::{
+    RuntimeClaimError, TransformFence, TransformWrite, transform_quota_tenant_id,
+};
 use sekai_client::protocol::sekai::{GovernedTransform, TransformRunInputRow, TransformWork};
 use sha2::{Digest as Sha256Digest, Sha256};
 
@@ -84,6 +86,12 @@ pub fn job_from_claimed(
             "claimed transform has no namespace".into(),
         ));
     }
+    // JobSource quota keys require a tenant_id. Prefer the submitting owner
+    // from the claim; community work has none and keeps today's namespace key.
+    let tenant_id = match transform_quota_tenant_id(work) {
+        owner if !owner.is_empty() => owner.to_string(),
+        _ => namespace.clone(),
+    };
     let output = transform.output_dataset_id.trim();
     if output.is_empty() {
         return Err(SekaiSourceError::Transport(
@@ -106,7 +114,7 @@ pub fn job_from_claimed(
         },
         cpu_time: None,
         memory_bytes: (transform.memory_limit_bytes > 0).then_some(transform.memory_limit_bytes),
-        tenant_id: namespace.clone(),
+        tenant_id,
         namespace,
         runtime_image: python_runtime_image(engine, &transform.runtime_image)?,
         isolation: IsolationTier::LinuxNative,
@@ -165,6 +173,7 @@ pub fn transform_write_from_complete(
         output_digest,
         quarantined: false,
         quality_rule: String::new(),
+        partitions: Vec::new(),
     })
 }
 
@@ -174,6 +183,7 @@ pub fn transform_write_from_failure(failure: &Failure) -> TransformWrite {
         output_digest: String::new(),
         quarantined: true,
         quality_rule: failure.to_string(),
+        partitions: Vec::new(),
     }
 }
 
@@ -271,6 +281,7 @@ fn csv_rows_limited(
             dataset_id: output.name.clone(),
             row_id: i64::try_from(index + 1).unwrap_or(i64::MAX),
             values: map,
+            ..Default::default()
         });
     }
     Ok(rows)
@@ -647,6 +658,20 @@ mod tests {
     }
 
     #[test]
+    fn job_from_claimed_keys_quota_on_the_work_owner_not_the_namespace() {
+        let mut owned = work();
+        owned.tenant_id = " tenant-a ".into();
+        let job = job_from_claimed(&owned, &transform("python", "print('ok')"), Vec::new())
+            .expect("mapped");
+        assert_eq!(job.tenant_id, "tenant-a");
+        assert_eq!(job.namespace, "ops");
+        let community = job_from_claimed(&work(), &transform("python", "print('ok')"), Vec::new())
+            .expect("mapped");
+        assert_eq!(community.tenant_id, "ops");
+        assert_eq!(community.namespace, "ops");
+    }
+
+    #[test]
     fn job_from_claimed_maps_engine_limits_and_image() {
         let job = job_from_claimed(&work(), &transform("python", "print('ok')"), Vec::new())
             .expect("mapped");
@@ -718,6 +743,7 @@ mod tests {
             dataset_id: "in".into(),
             row_id: 1,
             values: [("id".into(), "1".into())].into_iter().collect(),
+            ..Default::default()
         }];
         let inputs = stage_input_rows(scratch.path(), &rows).expect("staged");
         assert_eq!(inputs.len(), 1);
@@ -760,6 +786,7 @@ mod tests {
                 dataset_id: "out".into(),
                 row_id: 1,
                 values: HashMap::from([("id".into(), id.into())]),
+                ..Default::default()
             }
         }
         let first = row("1");
@@ -927,6 +954,7 @@ mod tests {
                 dataset_id: alias.into(),
                 row_id: 1,
                 values: [("id".into(), "1".into())].into_iter().collect(),
+                ..Default::default()
             }];
             let error = stage_input_rows(scratch.path(), &rows).unwrap_err();
             assert!(
@@ -949,6 +977,7 @@ mod tests {
             dataset_id: "in".into(),
             row_id: 1,
             values: [("id".into(), "1".into())].into_iter().collect(),
+            ..Default::default()
         }];
         let inputs = stage_input_rows(scratch.path(), &rows).expect("staged");
         assert_eq!(fs::read_to_string(&target).unwrap(), "secret\n");
@@ -974,6 +1003,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            ..Default::default()
         }];
         let inputs = stage_input_rows(scratch.path(), &rows).expect("staged");
         let job = job_from_claimed(&work(), &transform("python", "print('ok')"), Vec::new())

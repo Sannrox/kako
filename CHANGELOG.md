@@ -8,6 +8,11 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- Isolated-process jobs key quotas on the submitting transform owner from
+  `TransformWork.tenant_id` when present, and keep the namespace key for
+  community work with no owner. The optional `sekai-client` pin is
+  `dccc1e704adf21057bcaa435aef90660db0e9c52`.
+
 - The workspace splits into `kako-core`, `kako-sandbox`, engine crates,
   `kako-worker`, and `kako` ([ADR 0010](docs/decisions/0010-crate-graph.md)).
   `kako::` module paths stay. Sandbox functions take `IsolationTier` and
