@@ -7,8 +7,9 @@ use serde::Serialize;
 
 use crate::{Lineage, Receipt};
 
-/// Schema 3 adds required `isolation` (the tier that ran).
-const RECEIPT_VERSION: u32 = 3;
+/// Schema 3 adds required `isolation` (the tier that ran). Schema 4 adds
+/// optional `credential_scope` (the job-scoped credential id, never the secret).
+const RECEIPT_VERSION: u32 = 4;
 
 #[derive(Serialize)]
 struct FileReceipt<'a> {
@@ -31,6 +32,8 @@ struct FileReceipt<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     runtime_image: Option<&'a str>,
     isolation: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credential_scope: Option<&'a str>,
 }
 
 /// Serialize a receipt as stable JSON (sorted maps, trailing newline).
@@ -64,6 +67,7 @@ pub fn to_json(receipt: &Receipt) -> Result<String, String> {
         lineage: receipt.lineage.as_ref(),
         runtime_image: receipt.runtime_image.as_deref(),
         isolation: receipt.isolation.as_str(),
+        credential_scope: receipt.credential_scope.as_deref(),
     };
     let mut json = serde_json::to_string_pretty(&body)
         .map_err(|error| format!("serialize receipt: {error}"))?;
@@ -94,10 +98,11 @@ mod tests {
             lineage: None,
             runtime_image: None,
             isolation: crate::IsolationTier::LinuxNative,
+            credential_scope: None,
         };
         let json = to_json(&receipt).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["receipt_version"], 3);
+        assert_eq!(v["receipt_version"], 4);
         assert_eq!(v["job_id"], "j1");
         assert_eq!(v["tenant_id"], "t");
         assert_eq!(v["namespace"], "ns");
@@ -111,6 +116,7 @@ mod tests {
         assert!(v.get("memory_peak_bytes").is_none(), "{json}");
         assert!(v.get("lineage").is_none(), "{json}");
         assert!(v.get("runtime_image").is_none(), "{json}");
+        assert!(v.get("credential_scope").is_none(), "{json}");
         assert_eq!(v["isolation"], "linux_native");
     }
 
@@ -131,6 +137,7 @@ mod tests {
             lineage: None,
             runtime_image: Some("python-lockfile:sha256:aa".into()),
             isolation: crate::IsolationTier::Userspace,
+            credential_scope: Some("cred-7".into()),
         };
         let json = to_json(&receipt).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -138,5 +145,6 @@ mod tests {
         assert_eq!(v["memory_peak_bytes"], 4_096);
         assert_eq!(v["runtime_image"], "python-lockfile:sha256:aa");
         assert_eq!(v["isolation"], "userspace");
+        assert_eq!(v["credential_scope"], "cred-7");
     }
 }

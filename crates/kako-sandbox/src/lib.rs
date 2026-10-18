@@ -1,5 +1,6 @@
 //! kekkai backend selection, doctor, and sandboxed spawn.
 
+use std::ffi::OsString;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -374,6 +375,7 @@ fn run_sandboxed_on(
         }
     })?;
     command.current_dir(scratch);
+    keep_only_explicit_env(&mut command);
     let tmp = scratch.join("tmp");
     command.env("HOME", scratch);
     command.env("TMPDIR", &tmp);
@@ -383,6 +385,18 @@ fn run_sandboxed_on(
         return run_userspace(sandbox, command, wall_clock);
     }
     run_in_process(sandbox, command, wall_clock)
+}
+
+/// Drop the runner's inherited environment and keep the variables the caller
+/// set on `command`. `/proc/self/environ` is readable in the sandbox, so
+/// anything inherited (a plane token, a job credential) would reach user code.
+fn keep_only_explicit_env(command: &mut Command) {
+    let explicit: Vec<(OsString, OsString)> = command
+        .get_envs()
+        .filter_map(|(key, value)| Some((key.to_owned(), value?.to_owned())))
+        .collect();
+    command.env_clear();
+    command.envs(explicit);
 }
 
 fn guest_readable_roots(extra: &[PathBuf]) -> Vec<PathBuf> {

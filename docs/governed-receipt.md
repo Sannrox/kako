@@ -1,6 +1,6 @@
 # Governed JobSpec and run-receipt mapping
 
-kako file receipts stay `receipt_version` 3. `kako_core::governed` maps a
+kako file receipts are `receipt_version` 4. `kako_core::governed` maps a
 `Job` and `Receipt` onto the Sekai isolated-process JobSpec and `TransformRun`
 JSON. See [ADR 0012](decisions/0012-governed-receipt-mapping.md).
 

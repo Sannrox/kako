@@ -521,6 +521,7 @@ mod tests {
             lineage: Some(lineage.clone()),
             runtime_image: None,
             isolation: kako_core::IsolationTier::LinuxNative,
+            credential_scope: None,
         };
         let json = kako_core::receipt::to_json(&receipt).unwrap();
         let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();

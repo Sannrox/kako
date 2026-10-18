@@ -94,7 +94,7 @@ fn cli_join_twice_same_output_digest() {
         assert!(csv.contains("25") || csv.contains("25.0"), "{csv}");
         let receipt = fs::read_to_string(out.join("receipt.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&receipt).unwrap();
-        assert_eq!(v["receipt_version"], 3);
+        assert_eq!(v["receipt_version"], 4);
         assert_eq!(v["isolation"], "linux_native");
         assert_eq!(v["job_id"], "join-agg");
         assert!(
@@ -391,7 +391,7 @@ fn cli_copy_constant_row() {
     assert!(csv.contains('1'), "{csv}");
     let receipt = fs::read_to_string(out.join("receipt.json")).unwrap();
     let v: serde_json::Value = serde_json::from_str(&receipt).unwrap();
-    assert_eq!(v["receipt_version"], 3);
+    assert_eq!(v["receipt_version"], 4);
     assert_eq!(v["isolation"], "linux_native");
     assert_eq!(v["tenant_id"], "local");
     assert_eq!(v["namespace"], "default");
@@ -549,6 +549,85 @@ fn cli_python_polars_join() {
             .starts_with("python-lockfile:sha256:"),
         "{receipt}"
     );
+}
+
+/// A secret in the runner's environment (where a source might keep a plane
+/// token or job credential) must not reach user code through its env, the
+/// scratch tree, or `/proc` of any ancestor process.
+#[test]
+fn cli_python_cannot_find_a_runner_secret() {
+    if !require_linux_native_for_python() {
+        return;
+    }
+    if !python_runtime_available() {
+        skip_python("python runtime with polars is unavailable");
+        return;
+    }
+    let code = r#"
+import os
+import polars as pl
+
+# Built at runtime so the staged code itself never matches.
+MARKER = ("kako-test-runner-" + "credential").encode()
+
+def readable(path):
+    try:
+        with open(path, "rb") as handle:
+            return handle.read()
+    except OSError:
+        return b""
+
+def transform(inputs):
+    found = []
+    if any(MARKER.decode() in value for value in os.environ.values()):
+        found.append("env")
+    pid, seen = os.getpid(), set()
+    while pid > 1 and pid not in seen:
+        seen.add(pid)
+        for name in ("environ", "cmdline"):
+            if MARKER in readable(f"/proc/{pid}/{name}"):
+                found.append(f"proc/{pid}/{name}")
+        stat = readable(f"/proc/{pid}/stat").decode(errors="replace")
+        try:
+            pid = int(stat.rsplit(")", 1)[1].split()[1])
+        except (IndexError, ValueError):
+            break
+    for root, _, files in os.walk("."):
+        for file in files:
+            if MARKER in readable(os.path.join(root, file)):
+                found.append(os.path.join(root, file))
+    return {"probe.csv": pl.DataFrame({"found": [";".join(found) or "none"]})}
+"#;
+    let dir = tempfile::tempdir().unwrap();
+    let job = dir.path().join("job.json");
+    let body = serde_json::json!({
+        "id": "secret-probe",
+        "engine": "python",
+        "code": code,
+        "inputs": {},
+        "outputs": ["probe.csv"],
+        "timeout_ms": 30000
+    });
+    fs::write(&job, body.to_string()).unwrap();
+    let out = dir.path().join("out");
+    let secret = format!("kako-test-runner-credential-{}", std::process::id());
+    let output = Command::new(worker())
+        .arg("run")
+        .arg(&job)
+        .arg("--output")
+        .arg(&out)
+        .env("KAKO_TEST_RUNNER_CREDENTIAL", &secret)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "probe run failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let csv = fs::read_to_string(out.join("probe.csv")).unwrap();
+    assert_eq!(csv.trim(), "found\nnone", "user code found the secret");
+    let receipt = fs::read_to_string(out.join("receipt.json")).unwrap();
+    assert!(!receipt.contains(&secret), "{receipt}");
 }
 
 #[test]

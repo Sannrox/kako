@@ -638,6 +638,7 @@ mod tests {
             lineage: None,
             runtime_image: job.runtime_image.clone(),
             isolation: job.isolation,
+            credential_scope: None,
         }
     }
 

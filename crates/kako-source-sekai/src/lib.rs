@@ -1,12 +1,13 @@
 //! Sekai isolated-process [`JobSource`] adapter.
 //!
-//! Fence, heartbeat, and write-back stay in this crate. kako-core does not
-//! depend on Sekai. Default tests use a fake claim transport; the published
-//! runtime-claim client is an optional feature.
+//! Fence, heartbeat, job-scoped credentials, and write-back stay in this
+//! crate. kako-core does not depend on Sekai. Default tests use a fake claim
+//! transport; the published runtime-claim client is an optional feature.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
+use kako_core::credential::{CredentialScope, JobCredential, Secret, ttl_for};
 use kako_core::{
     Engine, Failure, Input, IsolationTier, Job, JobSource, Output, Receipt, WriteMode,
 };
@@ -47,14 +48,31 @@ impl std::fmt::Display for SekaiSourceError {
 
 impl std::error::Error for SekaiSourceError {}
 
-/// Claim, heartbeat, and fenced write-back. Fake tests implement this;
-/// the optional `sekai-client` feature wraps the published client.
+/// Claim, heartbeat, job-scoped credentials, and fenced write-back. Fake
+/// tests implement this; the optional `sekai-client` feature wraps the
+/// published client.
 pub trait ClaimTransport {
     fn claim_next(&mut self, runtime_id: &str) -> Result<Option<ClaimedWork>, SekaiSourceError>;
     fn heartbeat(&mut self, fence: &Fence) -> Result<(), SekaiSourceError>;
+
+    /// Mint a credential for the claimed job that lives at most `ttl`. Its
+    /// scope must equal [`CredentialScope::for_job`] for `job`; the source
+    /// refuses anything broader or longer-lived.
+    fn mint_credential(
+        &mut self,
+        fence: &Fence,
+        job: &Job,
+        ttl: Duration,
+    ) -> Result<JobCredential, SekaiSourceError>;
+
+    /// Revoke a credential before its expiry. Called once per minted credential.
+    fn revoke_credential(&mut self, credential: &JobCredential) -> Result<(), SekaiSourceError>;
+
+    /// Write outputs under the fence, presenting the job's credential.
     fn write_outputs(
         &mut self,
         fence: &Fence,
+        credential: &JobCredential,
         outputs: &[Output],
         receipt: &Receipt,
     ) -> Result<(), SekaiSourceError>;
@@ -73,10 +91,21 @@ pub trait ClaimTransport {
 }
 
 /// Job source that claims isolated-process work and writes back under the fence.
+///
+/// Each claim gets one job-scoped credential, held here in the runner
+/// process. It is revoked whenever the claim ends: write-back, failure
+/// report, hand-back, or fence loss.
 pub struct SekaiSource<T> {
     transport: T,
     runtime_id: String,
-    held: Option<Fence>,
+    held: Option<Held>,
+}
+
+/// The claim this source holds and the credential minted for it.
+#[derive(Clone)]
+struct Held {
+    fence: Fence,
+    credential: JobCredential,
 }
 
 impl<T: ClaimTransport> SekaiSource<T> {
@@ -92,17 +121,46 @@ impl<T: ClaimTransport> SekaiSource<T> {
         self.transport
     }
 
-    fn require_held<'a>(&'a self, job: &Job) -> Result<&'a Fence, SekaiSourceError> {
-        let fence = self
+    fn require_held(&self, job: &Job) -> Result<Held, SekaiSourceError> {
+        let held = self
             .held
             .as_ref()
             .ok_or_else(|| SekaiSourceError::Transport("no held claim".into()))?;
-        if fence.run_id != job.id {
+        if held.fence.run_id != job.id {
             return Err(SekaiSourceError::Transport(
                 "job does not match the held claim".into(),
             ));
         }
-        Ok(fence)
+        Ok(held.clone())
+    }
+
+    /// Mint the claim's credential and refuse one broader than the job or
+    /// living past its TTL.
+    fn mint_for(&mut self, claimed: &ClaimedWork) -> Result<JobCredential, SekaiSourceError> {
+        let ttl = ttl_for(&claimed.job);
+        let credential = self
+            .transport
+            .mint_credential(&claimed.fence, &claimed.job, ttl)?;
+        let latest_expiry = SystemTime::now() + ttl;
+        let expected = CredentialScope::for_job(credential.scope.id.clone(), &claimed.job);
+        if credential.scope != expected || credential.expires_at > latest_expiry {
+            // The refusal is what matters; expiry bounds it if revoke fails.
+            let _ = self.transport.revoke_credential(&credential);
+            return Err(SekaiSourceError::Transport(
+                "minted credential is broader or longer-lived than the job".into(),
+            ));
+        }
+        Ok(credential)
+    }
+
+    /// Drop the held claim and revoke its credential. `result` wins over a
+    /// revoke error; a credential that failed to revoke still expires.
+    fn end_claim(&mut self, result: Result<(), SekaiSourceError>) -> Result<(), SekaiSourceError> {
+        let Some(held) = self.held.take() else {
+            return result;
+        };
+        let revoked = self.transport.revoke_credential(&held.credential);
+        result.and(revoked)
     }
 }
 
@@ -122,7 +180,19 @@ impl<T: ClaimTransport> JobSource for SekaiSource<T> {
         let Some(claimed) = self.transport.claim_next(&self.runtime_id)? else {
             return Ok(None);
         };
-        self.held = Some(claimed.fence);
+        let credential = match self.mint_for(&claimed) {
+            Ok(credential) => credential,
+            Err(error) => {
+                // Hand the unrun job back; a failed hand-back leaves the
+                // claim to its lease, and the mint error is the one to report.
+                let _ = self.transport.release(&claimed.fence);
+                return Err(error);
+            }
+        };
+        self.held = Some(Held {
+            fence: claimed.fence,
+            credential,
+        });
         Ok(Some(claimed.job))
     }
 
@@ -132,36 +202,40 @@ impl<T: ClaimTransport> JobSource for SekaiSource<T> {
         outputs: &[Output],
         receipt: &Receipt,
     ) -> Result<(), Self::Error> {
-        let fence = self.require_held(job)?.clone();
-        if let Err(error) = self.transport.heartbeat(&fence) {
-            self.held = None;
-            return Err(error);
+        let held = self.require_held(job)?;
+        if let Err(error) = self.transport.heartbeat(&held.fence) {
+            return self.end_claim(Err(error));
         }
-        let result = self.transport.write_outputs(&fence, outputs, receipt);
+        let receipt = Receipt {
+            credential_scope: Some(held.credential.scope.id.clone()),
+            ..receipt.clone()
+        };
+        let result = self
+            .transport
+            .write_outputs(&held.fence, &held.credential, outputs, &receipt);
         if result.is_ok() || matches!(result, Err(SekaiSourceError::FenceLost)) {
-            self.held = None;
+            return self.end_claim(result);
         }
         result
     }
 
     fn fail(&mut self, job: &Job, failure: &Failure) -> Result<(), Self::Error> {
-        let fence = self.require_held(job)?.clone();
-        if let Err(error) = self.transport.heartbeat(&fence) {
-            self.held = None;
-            return Err(error);
+        let held = self.require_held(job)?;
+        if let Err(error) = self.transport.heartbeat(&held.fence) {
+            return self.end_claim(Err(error));
         }
-        let result = self.transport.report_failure(&fence, failure);
+        let result = self.transport.report_failure(&held.fence, failure);
         if result.is_ok() || matches!(result, Err(SekaiSourceError::FenceLost)) {
-            self.held = None;
+            return self.end_claim(result);
         }
         result
     }
 
     fn release(&mut self, job: &Job) -> Result<(), Self::Error> {
-        let fence = self.require_held(job)?.clone();
-        let result = self.transport.release(&fence);
+        let held = self.require_held(job)?;
+        let result = self.transport.release(&held.fence);
         if result.is_ok() || matches!(result, Err(SekaiSourceError::FenceLost)) {
-            self.held = None;
+            return self.end_claim(result);
         }
         result
     }
@@ -176,8 +250,12 @@ pub struct FakeClaimTransport {
     fence_lost_on_write: bool,
     heartbeat_error: Option<String>,
     report_error: Option<String>,
+    broaden_credential: bool,
     writes: Vec<PathBuf>,
+    receipts: Vec<Receipt>,
     failures: Vec<String>,
+    live_credentials: Vec<JobCredential>,
+    revoked: Vec<String>,
 }
 
 impl FakeClaimTransport {
@@ -204,8 +282,28 @@ impl FakeClaimTransport {
         self.report_error = Some(message.into());
     }
 
+    /// Mint credentials that may also write an output the job does not name.
+    pub fn broaden_credential(&mut self) {
+        self.broaden_credential = true;
+    }
+
     pub fn writes(&self) -> &[PathBuf] {
         &self.writes
+    }
+
+    /// Receipts as written back under the fence.
+    pub fn receipts(&self) -> &[Receipt] {
+        &self.receipts
+    }
+
+    /// Minted credentials not yet revoked.
+    pub fn live_credentials(&self) -> &[JobCredential] {
+        &self.live_credentials
+    }
+
+    /// Scope ids of revoked credentials, in revoke order.
+    pub fn revoked(&self) -> &[String] {
+        &self.revoked
     }
 
     pub fn failures(&self) -> &[String] {
@@ -237,17 +335,51 @@ impl ClaimTransport for FakeClaimTransport {
         Ok(())
     }
 
+    fn mint_credential(
+        &mut self,
+        fence: &Fence,
+        job: &Job,
+        ttl: Duration,
+    ) -> Result<JobCredential, SekaiSourceError> {
+        let id = format!("cred-{}-{}", fence.run_id, fence.generation);
+        let mut scope = CredentialScope::for_job(id.as_str(), job);
+        if self.broaden_credential {
+            scope.write.push("unrelated-dataset".into());
+        }
+        let credential = JobCredential {
+            scope,
+            secret: Secret::new(format!("job-secret-{id}")),
+            expires_at: SystemTime::now() + ttl,
+        };
+        self.live_credentials.push(credential.clone());
+        Ok(credential)
+    }
+
+    fn revoke_credential(&mut self, credential: &JobCredential) -> Result<(), SekaiSourceError> {
+        self.live_credentials
+            .retain(|live| live.scope.id != credential.scope.id);
+        self.revoked.push(credential.scope.id.clone());
+        Ok(())
+    }
+
     fn write_outputs(
         &mut self,
         _fence: &Fence,
+        credential: &JobCredential,
         outputs: &[Output],
-        _receipt: &Receipt,
+        receipt: &Receipt,
     ) -> Result<(), SekaiSourceError> {
         if self.fence_lost || self.fence_lost_on_write {
             return Err(SekaiSourceError::FenceLost);
         }
+        if !self.live_credentials.contains(credential) {
+            return Err(SekaiSourceError::Transport(
+                "write-back credential is not live".into(),
+            ));
+        }
         self.writes
             .extend(outputs.iter().map(|output| output.path.clone()));
+        self.receipts.push(receipt.clone());
         self.held_work = None;
         Ok(())
     }
@@ -348,6 +480,7 @@ mod tests {
             lineage: None,
             runtime_image: job.runtime_image.clone(),
             isolation: job.isolation,
+            credential_scope: None,
         }
     }
 
@@ -371,7 +504,9 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(error, SekaiSourceError::FenceLost);
-        assert!(source.into_transport().writes().is_empty());
+        let transport = source.into_transport();
+        assert!(transport.writes().is_empty());
+        assert!(transport.live_credentials().is_empty());
     }
 
     #[test]
@@ -478,6 +613,64 @@ mod tests {
             .fail(&claimed, &Failure::Job("boom".into()))
             .unwrap_err();
         assert!(matches!(error, SekaiSourceError::Transport(message) if message == "unavailable"));
+        assert_eq!(source.into_transport().live_credentials().len(), 1);
+    }
+
+    #[test]
+    fn write_back_uses_a_job_scoped_credential_and_receipt_names_only_its_scope() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (job, fence) = sample_claimed_job(scratch.path(), "runner-a");
+        let mut source = SekaiSource::new(FakeClaimTransport::with_job(job, fence), "runner-a");
+        let claimed = source.next_job().unwrap().expect("claimed");
+        let credential = source.transport.live_credentials()[0].clone();
+        assert_eq!(credential.scope.read, ["in"]);
+        assert_eq!(credential.scope.write, ["out"]);
+        assert!(credential.expires_at <= SystemTime::now() + ttl_for(&claimed));
+        source.complete(&claimed, &[], &receipt(&claimed)).unwrap();
+        let transport = source.into_transport();
+        let written = &transport.receipts()[0];
+        assert_eq!(
+            written.credential_scope.as_deref(),
+            Some(credential.scope.id.as_str())
+        );
+        let json = kako_core::receipt::to_json(written).unwrap();
+        assert!(!json.contains(credential.secret.expose()), "{json}");
+        assert!(transport.live_credentials().is_empty());
+        assert_eq!(transport.revoked(), [credential.scope.id]);
+    }
+
+    #[test]
+    fn credential_is_revoked_when_the_claim_ends_without_write_back() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (job, fence) = sample_claimed_job(scratch.path(), "runner-a");
+        let mut source = SekaiSource::new(FakeClaimTransport::with_job(job, fence), "runner-a");
+        let claimed = source.next_job().unwrap().expect("claimed");
+        source.release(&claimed).unwrap();
+        assert!(source.transport.live_credentials().is_empty());
+        let again = source.next_job().unwrap().expect("requeued");
+        source.fail(&again, &Failure::Job("boom".into())).unwrap();
+        let transport = source.into_transport();
+        assert!(transport.live_credentials().is_empty());
+        assert_eq!(transport.revoked().len(), 2);
+    }
+
+    #[test]
+    fn broader_credential_is_refused_and_the_claim_handed_back() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (job, fence) = sample_claimed_job(scratch.path(), "runner-a");
+        let mut transport = FakeClaimTransport::with_job(job, fence);
+        transport.broaden_credential();
+        let mut source = SekaiSource::new(transport, "runner-a");
+        let error = source.next_job().unwrap_err();
+        assert!(
+            matches!(error, SekaiSourceError::Transport(message) if message.contains("broader"))
+        );
+        let mut transport = source.into_transport();
+        assert!(transport.live_credentials().is_empty());
+        assert!(
+            transport.claim_next("runner-a").unwrap().is_some(),
+            "claim handed back"
+        );
     }
 
     #[test]
