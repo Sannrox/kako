@@ -178,6 +178,8 @@ mod tests {
                 .stage_inputs(&[Input {
                     name: "orders".into(),
                     path: src.clone(),
+                    markings: Vec::new(),
+                    column_markings: Default::default(),
                 }])
                 .unwrap();
             assert_eq!(staged[0].0, "orders");
@@ -206,6 +208,8 @@ mod tests {
             .stage_inputs(&[Input {
                 name: "orders".into(),
                 path: link,
+                markings: Vec::new(),
+                column_markings: Default::default(),
             }])
             .unwrap_err();
         assert!(err.contains("symlink"), "{err}");

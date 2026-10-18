@@ -94,9 +94,13 @@ fn cli_join_twice_same_output_digest() {
         assert!(csv.contains("25") || csv.contains("25.0"), "{csv}");
         let receipt = fs::read_to_string(out.join("receipt.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&receipt).unwrap();
-        assert_eq!(v["receipt_version"], 4);
+        assert_eq!(v["receipt_version"], 5);
         assert_eq!(v["isolation"], "linux_native");
         assert_eq!(v["job_id"], "join-agg");
+        assert_eq!(v["input_markings"]["customers"], serde_json::json!([]));
+        assert_eq!(v["input_markings"]["orders"], serde_json::json!([]));
+        assert_eq!(v["output_markings"]["totals.csv"], serde_json::json!([]));
+        assert!(v.get("declassify").is_none(), "{receipt}");
         assert!(
             v["inputs"]["customers"]
                 .as_str()
@@ -391,8 +395,11 @@ fn cli_copy_constant_row() {
     assert!(csv.contains('1'), "{csv}");
     let receipt = fs::read_to_string(out.join("receipt.json")).unwrap();
     let v: serde_json::Value = serde_json::from_str(&receipt).unwrap();
-    assert_eq!(v["receipt_version"], 4);
+    assert_eq!(v["receipt_version"], 5);
     assert_eq!(v["isolation"], "linux_native");
+    assert_eq!(v["input_markings"]["in"], serde_json::json!([]));
+    assert_eq!(v["output_markings"]["one.csv"], serde_json::json!([]));
+    assert!(v.get("declassify").is_none(), "{receipt}");
     assert_eq!(v["tenant_id"], "local");
     assert_eq!(v["namespace"], "default");
     assert!(

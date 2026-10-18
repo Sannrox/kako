@@ -143,11 +143,16 @@ impl<T: ClaimTransport> SekaiSource<T> {
             .mint_credential(&claimed.fence, &claimed.job, ttl)?;
         let latest_expiry = SystemTime::now() + ttl;
         let expected = CredentialScope::for_job(credential.scope.id.clone(), &claimed.job);
+        if let Err(message) = credential.scope.covers_input_markings(&claimed.job) {
+            let _ = self.transport.revoke_credential(&credential);
+            return Err(SekaiSourceError::Transport(message));
+        }
         if credential.scope != expected || credential.expires_at > latest_expiry {
             // The refusal is what matters; expiry bounds it if revoke fails.
             let _ = self.transport.revoke_credential(&credential);
             return Err(SekaiSourceError::Transport(
-                "minted credential is broader or longer-lived than the job".into(),
+                "minted credential is broader, longer-lived, or does not cover input markings"
+                    .into(),
             ));
         }
         Ok(credential)
@@ -251,6 +256,7 @@ pub struct FakeClaimTransport {
     heartbeat_error: Option<String>,
     report_error: Option<String>,
     broaden_credential: bool,
+    omit_credential_markings: bool,
     writes: Vec<PathBuf>,
     receipts: Vec<Receipt>,
     failures: Vec<String>,
@@ -285,6 +291,11 @@ impl FakeClaimTransport {
     /// Mint credentials that may also write an output the job does not name.
     pub fn broaden_credential(&mut self) {
         self.broaden_credential = true;
+    }
+
+    /// Mint credentials that omit the job's input markings.
+    pub fn omit_credential_markings(&mut self) {
+        self.omit_credential_markings = true;
     }
 
     pub fn writes(&self) -> &[PathBuf] {
@@ -345,6 +356,9 @@ impl ClaimTransport for FakeClaimTransport {
         let mut scope = CredentialScope::for_job(id.as_str(), job);
         if self.broaden_credential {
             scope.write.push("unrelated-dataset".into());
+        }
+        if self.omit_credential_markings {
+            scope.read_markings.clear();
         }
         let credential = JobCredential {
             scope,
@@ -435,6 +449,8 @@ pub fn sample_claimed_job(scratch: &Path, runtime_id: &str) -> (Job, Fence) {
         inputs: vec![Input {
             name: "in".into(),
             path: input,
+            markings: Vec::new(),
+            column_markings: Default::default(),
         }],
         outputs: vec!["out".into()],
         write_mode: WriteMode::Overwrite,
@@ -445,6 +461,8 @@ pub fn sample_claimed_job(scratch: &Path, runtime_id: &str) -> (Job, Fence) {
         namespace: "ops".into(),
         runtime_image: Some("runner:1".into()),
         isolation: IsolationTier::LinuxNative,
+        output_markings: Default::default(),
+        declassify: None,
     };
     let fence = Fence {
         run_id: "run-1".into(),
@@ -481,6 +499,9 @@ mod tests {
             runtime_image: job.runtime_image.clone(),
             isolation: job.isolation,
             credential_scope: None,
+            input_markings: Vec::new(),
+            output_markings: Vec::new(),
+            declassify: None,
         }
     }
 
@@ -652,6 +673,27 @@ mod tests {
         let transport = source.into_transport();
         assert!(transport.live_credentials().is_empty());
         assert_eq!(transport.revoked().len(), 2);
+    }
+
+    #[test]
+    fn credential_missing_input_markings_is_refused_and_the_claim_handed_back() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (mut job, fence) = sample_claimed_job(scratch.path(), "runner-a");
+        job.inputs[0].markings = vec!["pii".into()];
+        let mut transport = FakeClaimTransport::with_job(job, fence);
+        transport.omit_credential_markings();
+        let mut source = SekaiSource::new(transport, "runner-a");
+        let error = source.next_job().unwrap_err();
+        assert!(
+            matches!(error, SekaiSourceError::Transport(ref message) if message.contains("pii")),
+            "{error}"
+        );
+        let mut transport = source.into_transport();
+        assert!(transport.live_credentials().is_empty());
+        assert!(
+            transport.claim_next("runner-a").unwrap().is_some(),
+            "claim handed back"
+        );
     }
 
     #[test]

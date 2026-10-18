@@ -17,5 +17,6 @@ Decisions that must outlive a single PR.
 | [0011](0011-runner-pool-drain.md) | Runner pool health, drain, and rollback | Accepted |
 | [0012](0012-governed-receipt-mapping.md) | kako receipts map onto the Sekai JobSpec and run receipt | Accepted |
 | [0013](0013-job-scoped-credentials.md) | Job-scoped credentials stay in the runner process | Accepted |
+| [0014](0014-job-markings.md) | Markings are opaque labels the job source attaches | Accepted |
 
 Template: short context, decision, consequences, rejected alternatives.

@@ -1,6 +1,6 @@
 # Governed JobSpec and run-receipt mapping
 
-kako file receipts are `receipt_version` 4. `kako_core::governed` maps a
+kako file receipts are `receipt_version` 5. `kako_core::governed` maps a
 `Job` and `Receipt` onto the Sekai isolated-process JobSpec and `TransformRun`
 JSON. See [ADR 0012](decisions/0012-governed-receipt-mapping.md).
 
@@ -39,7 +39,8 @@ The hashed envelope does not include SQL or Python source. That identity is
 | `dispatch_status` | `completed` |
 | `trigger_cause` | `manual` |
 | `rows_out` / `output_partitions` | mizuchi write lineage when present; partition `digest` stays empty (`commit_id` is not a content digest) |
-| `last_input_row_id`, `incremental`, `quarantined`, `quality_rule`, `rows_in`, `lineage_parent`, `markings_*`, `trigger_ref`, `input_partitions` | empty / zero / false |
+| `markings_in` / `markings_out` | sorted unique labels from the kako receipt maps, comma-separated |
+| `last_input_row_id`, `incremental`, `quarantined`, `quality_rule`, `rows_in`, `lineage_parent`, `trigger_ref`, `input_partitions` | empty / zero / false |
 
 `tenant_id`, `code`, `engine_version`, `duration_ms`, usage, and `isolation`
 stay on the kako file receipt only.

@@ -136,6 +136,7 @@ mod tests {
             .map(|(name, relative)| StagedInput {
                 name,
                 relative: relative.display().to_string(),
+                ..Default::default()
             })
             .collect()
     }
@@ -152,6 +153,8 @@ mod tests {
             &[Input {
                 name: "in".into(),
                 path: input,
+                markings: Vec::new(),
+                column_markings: Default::default(),
             }],
         );
         let sql = "COPY (SELECT 1 AS x) TO 'outputs/one.csv' (HEADER, DELIMITER ',');";
@@ -177,10 +180,14 @@ mod tests {
                 Input {
                     name: "customers".into(),
                     path: customers,
+                    markings: Vec::new(),
+                    column_markings: Default::default(),
                 },
                 Input {
                     name: "orders".into(),
                     path: orders,
+                    markings: Vec::new(),
+                    column_markings: Default::default(),
                 },
             ],
         );
@@ -224,10 +231,14 @@ mod tests {
                 Input {
                     name: "customers".into(),
                     path: bar.join("customers.csv"),
+                    markings: Vec::new(),
+                    column_markings: Default::default(),
                 },
                 Input {
                     name: "orders".into(),
                     path: bar.join("orders.csv"),
+                    markings: Vec::new(),
+                    column_markings: Default::default(),
                 },
             ],
         );
@@ -258,6 +269,8 @@ mod tests {
             &[Input {
                 name: "in".into(),
                 path: input,
+                markings: Vec::new(),
+                column_markings: Default::default(),
             }],
         );
         let leak = sql_string(&outside.path().to_string_lossy());

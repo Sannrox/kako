@@ -77,6 +77,11 @@ A job file is JSON:
 `isolation` is a minimum tier (`linux_native`, `userspace`, or `kvm`).
 Omitted means `linux_native`. The receipt records the tier that ran.
 
+Optional `input_markings`, `input_column_markings`, `output_markings`, and
+`declassify` are opaque labels from the job source. The runner refuses an
+under-marked output unless `declassify` lists the dropped labels. See
+[ADR 0014](docs/decisions/0014-job-markings.md).
+
 Input paths are relative to the job file. Each input is staged as a DuckDB
 view with that name. User SQL writes files under `outputs/`. kako copies those
 files and `receipt.json` into `--output` (default `./out`).

@@ -11,8 +11,8 @@ pub use kako_core::manifest;
 pub use kako_core::receipt;
 pub use kako_core::stage;
 pub use kako_core::{
-    Digest, Engine, Failure, Input, IsolationTier, Job, JobSource, Lineage, LineageRead,
-    LineageWrite, Output, QuotaKey, Receipt, WriteMode,
+    ColumnMarking, DeclassifyDecision, Digest, Engine, Failure, Input, IsolationTier, Job,
+    JobSource, Lineage, LineageRead, LineageWrite, Output, QuotaKey, Receipt, WriteMode,
 };
 pub use kako_sandbox as sandbox;
 

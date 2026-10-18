@@ -380,10 +380,14 @@ mod tests {
                 Input {
                     name: "customers".into(),
                     path: bar.join("customers.csv"),
+                    markings: Vec::new(),
+                    column_markings: Default::default(),
                 },
                 Input {
                     name: "orders".into(),
                     path: bar.join("orders.csv"),
+                    markings: Vec::new(),
+                    column_markings: Default::default(),
                 },
             ])
             .unwrap();
@@ -641,10 +645,14 @@ def transform(inputs):
                 Input {
                     name: "customers".into(),
                     path: bar.join("customers.csv"),
+                    markings: Vec::new(),
+                    column_markings: Default::default(),
                 },
                 Input {
                     name: "orders".into(),
                     path: bar.join("orders.csv"),
+                    markings: Vec::new(),
+                    column_markings: Default::default(),
                 },
             ])
             .unwrap();

@@ -8,6 +8,13 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- The runner refuses a job whose credentials do not cover its inputs'
+  markings, and refuses an output whose declared markings omit the
+  required union unless the job source supplies a declassify decision
+  ([ADR 0014](docs/decisions/0014-job-markings.md)). SQL jobs propagate
+  labels per column through mizuchi; Python and DuckDB jobs use the
+  table-level union.
+
 - The sandboxed worker gets only the environment variables kako sets for it.
   It no longer inherits the runner's environment, which user code could read
   through `/proc/self/environ`.
@@ -20,6 +27,12 @@ uses [Semantic Versioning](https://semver.org/).
   `write_outputs` takes the credential.
 
 ### Changed
+
+- Receipt JSON is `receipt_version` 5: `input_markings` and
+  `output_markings` list labels by name, and optional `declassify`
+  records an audited drop. Schema 4's `credential_scope` is unchanged.
+  The mizuchi pin is `c4ae4a06e6275686173bcf1be44bdf328b22d5e5`
+  (column-level propagation).
 
 - Receipt JSON is `receipt_version` 4: optional `credential_scope` names the
   job-scoped credential used for write-back, never its secret. Local file
