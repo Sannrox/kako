@@ -38,8 +38,8 @@ fn encrypted_output_scan_finds_no_plaintext() {
         &job_path,
         r#"{
           "id": "enc-scan",
-          "sql": "COPY (SELECT note FROM in) TO 'outputs/out.csv' (HEADER, DELIMITER ',');",
-          "inputs": {"in": "in.csv"},
+          "sql": "COPY (SELECT note FROM notes) TO 'outputs/out.csv' (HEADER, DELIMITER ',');",
+          "inputs": {"notes": "in.csv"},
           "outputs": ["out.csv"],
           "tenant_id": "acme",
           "namespace": "default",
