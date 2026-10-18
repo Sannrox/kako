@@ -8,6 +8,14 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Security
 
+- Job claims may carry a wrapped tenant DEK. The runner unwraps it in
+  process, seals each published output as `KAKOSEAL`, and drops the DEK
+  when the run ends. A revoked key fails the job (`Failure::KeyRevoked`)
+  and writes a receipt with `key_state: "revoked"`. Key bytes never appear
+  on the receipt, in the scratch tree, or in the sandbox environment
+  ([#50](https://github.com/Sannrox/kako/issues/50),
+  [ADR 0015](docs/decisions/0015-job-encryption.md)).
+
 - The runner refuses a job whose credentials do not cover its inputs'
   markings, and refuses an output whose declared markings omit the
   required union unless the job source supplies a declassify decision
@@ -27,6 +35,11 @@ uses [Semantic Versioning](https://semver.org/).
   `write_outputs` takes the credential.
 
 ### Changed
+
+- Receipt JSON is `receipt_version` 6: optional `key_ids` and `key_state`
+  for encrypted runs. Unencrypted jobs omit both. The mizuchi pin is
+  `1c2e13030bfd94f2cdea6ac8aec277f651391a47` (table-file encryption).
+  `sekai-keys` is a git pin until it is on crates.io.
 
 - Receipt JSON is `receipt_version` 5: `input_markings` and
   `output_markings` list labels by name, and optional `declassify`

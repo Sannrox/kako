@@ -135,6 +135,20 @@ pub struct Job {
     /// Job-source declassify. When set, listed input labels may be omitted
     /// from declared outputs and the decision is copied onto the receipt.
     pub declassify: Option<DeclassifyDecision>,
+    /// Wrapped tenant DEK delivered with the claim. The runner unwraps it
+    /// in-process; it never enters the scratch tree or sandbox environment.
+    pub encryption: Option<JobKeyClaim>,
+}
+
+/// Wrapped data key the job source attached to a claim.
+///
+/// `wrapped_dek` is the JSON wrapped DEK. The runner records `dek_id` and
+/// `kek_id` on the receipt and never writes key bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobKeyClaim {
+    pub wrapped_dek: String,
+    pub dek_id: String,
+    pub kek_id: String,
 }
 
 /// Key for quotas, claims, and receipts: `(tenant_id, namespace)`.
@@ -208,6 +222,12 @@ pub struct Receipt {
     pub output_markings: Vec<(String, Vec<String>)>,
     /// Job-source declassify copied from the job, when present.
     pub declassify: Option<DeclassifyDecision>,
+    /// Key ids from the claim (`dek_id`, then `kek_id`). Empty when the job
+    /// did not encrypt. Never key bytes.
+    pub key_ids: Vec<String>,
+    /// `ready` after a keyed run, `revoked` when unwrap failed. Omitted when
+    /// the job was not encrypted.
+    pub key_state: Option<String>,
 }
 
 /// One input scan after projection and partition prune.
@@ -252,6 +272,8 @@ pub enum Failure {
     Limit(String),
     /// The runner itself could not run the job.
     Runner(String),
+    /// The job's data key was revoked before the worker started.
+    KeyRevoked { dek_id: String, kek_id: String },
 }
 
 impl fmt::Display for Failure {
@@ -260,6 +282,7 @@ impl fmt::Display for Failure {
             Self::Job(message) => write!(f, "job: {message}"),
             Self::Limit(message) => write!(f, "limit: {message}"),
             Self::Runner(message) => write!(f, "runner: {message}"),
+            Self::KeyRevoked { dek_id, .. } => write!(f, "key revoked: {dek_id}"),
         }
     }
 }
@@ -346,6 +369,7 @@ mod tests {
             isolation: IsolationTier::LinuxNative,
             output_markings: BTreeMap::new(),
             declassify: None,
+            encryption: None,
         };
         Empty.release(&job).unwrap();
         assert_eq!(Empty.next_job().unwrap(), None);

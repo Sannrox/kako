@@ -499,6 +499,7 @@ mod tests {
             isolation: IsolationTier::LinuxNative,
             output_markings: Default::default(),
             declassify: None,
+            encryption: None,
         }
     }
 
@@ -773,6 +774,8 @@ mod tests {
             input_markings: Vec::new(),
             output_markings: Vec::new(),
             declassify: None,
+            key_ids: Vec::new(),
+            key_state: None,
         }
     }
 }

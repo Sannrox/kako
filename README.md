@@ -82,6 +82,12 @@ Optional `input_markings`, `input_column_markings`, `output_markings`, and
 under-marked output unless `declassify` lists the dropped labels. See
 [ADR 0014](docs/decisions/0014-job-markings.md).
 
+When a job claim carries a wrapped tenant key, the runner unwraps it in
+process and seals published outputs as `KAKOSEAL`. Key bytes never enter
+the scratch tree, the worker manifest, or the sandbox environment. A
+revoked key fails the job. See
+[ADR 0015](docs/decisions/0015-job-encryption.md).
+
 Input paths are relative to the job file. Each input is staged as a DuckDB
 view with that name. User SQL writes files under `outputs/`. kako copies those
 files and `receipt.json` into `--output` (default `./out`).

@@ -463,6 +463,7 @@ pub fn sample_claimed_job(scratch: &Path, runtime_id: &str) -> (Job, Fence) {
         isolation: IsolationTier::LinuxNative,
         output_markings: Default::default(),
         declassify: None,
+        encryption: None,
     };
     let fence = Fence {
         run_id: "run-1".into(),
@@ -502,6 +503,8 @@ mod tests {
             input_markings: Vec::new(),
             output_markings: Vec::new(),
             declassify: None,
+            key_ids: Vec::new(),
+            key_state: None,
         }
     }
 

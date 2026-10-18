@@ -192,6 +192,7 @@ mod tests {
             isolation: IsolationTier::LinuxNative,
             output_markings,
             declassify,
+            encryption: None,
         }
     }
 
