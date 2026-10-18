@@ -9,7 +9,8 @@ use crate::{Lineage, Receipt};
 
 /// Schema 3 adds required `isolation` (the tier that ran). Schema 4 adds
 /// optional `credential_scope` (the job-scoped credential id, never the secret).
-const RECEIPT_VERSION: u32 = 4;
+/// Schema 5 adds input/output markings and an optional declassify decision.
+const RECEIPT_VERSION: u32 = 5;
 
 #[derive(Serialize)]
 struct FileReceipt<'a> {
@@ -34,6 +35,10 @@ struct FileReceipt<'a> {
     isolation: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     credential_scope: Option<&'a str>,
+    input_markings: BTreeMap<&'a str, Vec<&'a str>>,
+    output_markings: BTreeMap<&'a str, Vec<&'a str>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    declassify: Option<&'a crate::DeclassifyDecision>,
 }
 
 /// Serialize a receipt as stable JSON (sorted maps, trailing newline).
@@ -68,6 +73,17 @@ pub fn to_json(receipt: &Receipt) -> Result<String, String> {
         runtime_image: receipt.runtime_image.as_deref(),
         isolation: receipt.isolation.as_str(),
         credential_scope: receipt.credential_scope.as_deref(),
+        input_markings: receipt
+            .input_markings
+            .iter()
+            .map(|(name, labels)| (name.as_str(), labels.iter().map(String::as_str).collect()))
+            .collect(),
+        output_markings: receipt
+            .output_markings
+            .iter()
+            .map(|(name, labels)| (name.as_str(), labels.iter().map(String::as_str).collect()))
+            .collect(),
+        declassify: receipt.declassify.as_ref(),
     };
     let mut json = serde_json::to_string_pretty(&body)
         .map_err(|error| format!("serialize receipt: {error}"))?;
@@ -99,10 +115,13 @@ mod tests {
             runtime_image: None,
             isolation: crate::IsolationTier::LinuxNative,
             credential_scope: None,
+            input_markings: Vec::new(),
+            output_markings: Vec::new(),
+            declassify: None,
         };
         let json = to_json(&receipt).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["receipt_version"], 4);
+        assert_eq!(v["receipt_version"], 5);
         assert_eq!(v["job_id"], "j1");
         assert_eq!(v["tenant_id"], "t");
         assert_eq!(v["namespace"], "ns");
@@ -138,6 +157,13 @@ mod tests {
             runtime_image: Some("python-lockfile:sha256:aa".into()),
             isolation: crate::IsolationTier::Userspace,
             credential_scope: Some("cred-7".into()),
+            input_markings: vec![("in".into(), vec!["pii".into()])],
+            output_markings: vec![("out.csv".into(), vec!["pii".into()])],
+            declassify: Some(crate::DeclassifyDecision {
+                id: "dec-1".into(),
+                from: vec!["secret".into()],
+                reason: "public aggregate".into(),
+            }),
         };
         let json = to_json(&receipt).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -146,5 +172,10 @@ mod tests {
         assert_eq!(v["runtime_image"], "python-lockfile:sha256:aa");
         assert_eq!(v["isolation"], "userspace");
         assert_eq!(v["credential_scope"], "cred-7");
+        assert_eq!(v["input_markings"]["in"], serde_json::json!(["pii"]));
+        assert_eq!(v["output_markings"]["out.csv"], serde_json::json!(["pii"]));
+        assert_eq!(v["declassify"]["id"], "dec-1");
+        assert_eq!(v["declassify"]["from"], serde_json::json!(["secret"]));
+        assert_eq!(v["declassify"]["reason"], "public aggregate");
     }
 }

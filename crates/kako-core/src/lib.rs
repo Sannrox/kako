@@ -1,5 +1,6 @@
 //! Domain types, receipts, staging, and worker manifests for kako.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -13,10 +14,12 @@ pub mod fair;
 pub mod governed;
 pub mod isolation;
 pub mod manifest;
+pub mod marking;
 pub mod receipt;
 pub mod stage;
 
 pub use isolation::IsolationTier;
+pub use marking::{ColumnMarking, DeclassifyDecision};
 
 /// A content digest, written as `<algorithm>:<hex>` (for example SHA-256).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -89,6 +92,11 @@ impl FromStr for WriteMode {
 pub struct Input {
     pub name: String,
     pub path: PathBuf,
+    /// Table-level labels the job source attached. Empty is unmarked.
+    pub markings: Vec<String>,
+    /// Column-level labels. SQL (mizuchi) propagates these; Python unions
+    /// them with [`Self::markings`].
+    pub column_markings: BTreeMap<String, Vec<String>>,
 }
 
 /// A unit of work: code to run against named inputs.
@@ -122,6 +130,11 @@ pub struct Job {
     pub runtime_image: Option<String>,
     /// Minimum isolation the run must enforce. Omitted jobs are `linux_native`.
     pub isolation: IsolationTier,
+    /// Declared labels for each output name. Missing name is unmarked.
+    pub output_markings: BTreeMap<String, Vec<String>>,
+    /// Job-source declassify. When set, listed input labels may be omitted
+    /// from declared outputs and the decision is copied onto the receipt.
+    pub declassify: Option<DeclassifyDecision>,
 }
 
 /// Key for quotas, claims, and receipts: `(tenant_id, namespace)`.
@@ -189,15 +202,12 @@ pub struct Receipt {
     /// Id of the job-scoped credential the source used for remote inputs
     /// and outputs. Never the secret. `None` for local files.
     pub credential_scope: Option<String>,
-}
-
-/// Stable record of what one run read and wrote, for receipts.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct Lineage {
-    /// Executed plan text from the engine.
-    pub plan: String,
-    pub reads: Vec<LineageRead>,
-    pub writes: Vec<LineageWrite>,
+    /// Labels on each input, by input name.
+    pub input_markings: Vec<(String, Vec<String>)>,
+    /// Declared labels on each output, by output name.
+    pub output_markings: Vec<(String, Vec<String>)>,
+    /// Job-source declassify copied from the job, when present.
+    pub declassify: Option<DeclassifyDecision>,
 }
 
 /// One input scan after projection and partition prune.
@@ -219,6 +229,18 @@ pub struct LineageWrite {
     pub rows: u64,
     pub bytes: u64,
     pub commit_id: String,
+}
+
+/// Stable record of what one run read and wrote, for receipts.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Lineage {
+    /// Executed plan text from the engine.
+    pub plan: String,
+    pub reads: Vec<LineageRead>,
+    pub writes: Vec<LineageWrite>,
+    /// Output columns with the labels that reached them (mizuchi SQL).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub column_markings: Vec<ColumnMarking>,
 }
 
 /// Why a job did not produce outputs.
@@ -322,6 +344,8 @@ mod tests {
             namespace: "default".into(),
             runtime_image: None,
             isolation: IsolationTier::LinuxNative,
+            output_markings: BTreeMap::new(),
+            declassify: None,
         };
         Empty.release(&job).unwrap();
         assert_eq!(Empty.next_job().unwrap(), None);

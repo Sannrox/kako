@@ -118,6 +118,8 @@ pub fn job_from_claimed(
         namespace,
         runtime_image: python_runtime_image(engine, &transform.runtime_image)?,
         isolation: IsolationTier::LinuxNative,
+        output_markings: Default::default(),
+        declassify: None,
     })
 }
 
@@ -156,7 +158,12 @@ pub fn stage_input_rows(
     for (alias, alias_rows) in grouped {
         let path = staging_csv_path(scratch, &alias)?;
         write_csv(&path, &alias_rows)?;
-        inputs.push(Input { name: alias, path });
+        inputs.push(Input {
+            name: alias,
+            path,
+            markings: Vec::new(),
+            column_markings: Default::default(),
+        });
     }
     Ok(inputs)
 }
@@ -639,6 +646,9 @@ mod tests {
             runtime_image: job.runtime_image.clone(),
             isolation: job.isolation,
             credential_scope: None,
+            input_markings: Vec::new(),
+            output_markings: Vec::new(),
+            declassify: None,
         }
     }
 

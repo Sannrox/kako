@@ -102,6 +102,8 @@ mod tests {
             namespace: "default".into(),
             runtime_image: None,
             isolation: IsolationTier::LinuxNative,
+            output_markings: Default::default(),
+            declassify: None,
         }
     }
 

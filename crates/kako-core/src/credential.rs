@@ -23,6 +23,8 @@ pub struct CredentialScope {
     pub read: Vec<String>,
     /// Output names the credential may write.
     pub write: Vec<String>,
+    /// Labels the credential may read (union of the job's input markings).
+    pub read_markings: Vec<String>,
 }
 
 impl CredentialScope {
@@ -33,6 +35,7 @@ impl CredentialScope {
             job_id: job.id.clone(),
             read: job.inputs.iter().map(|input| input.name.clone()).collect(),
             write: job.outputs.clone(),
+            read_markings: crate::marking::input_union(job),
         }
     }
 }
@@ -92,6 +95,8 @@ mod tests {
             inputs: vec![Input {
                 name: "orders".into(),
                 path: PathBuf::from("orders.csv"),
+                markings: Vec::new(),
+                column_markings: Default::default(),
             }],
             outputs: vec!["totals.csv".into()],
             write_mode: WriteMode::Overwrite,
@@ -102,6 +107,8 @@ mod tests {
             namespace: "ns".into(),
             runtime_image: None,
             isolation: IsolationTier::LinuxNative,
+            output_markings: Default::default(),
+            declassify: None,
         }
     }
 
@@ -111,6 +118,7 @@ mod tests {
         assert_eq!(scope.job_id, "run-1");
         assert_eq!(scope.read, ["orders"]);
         assert_eq!(scope.write, ["totals.csv"]);
+        assert!(scope.read_markings.is_empty());
     }
 
     #[test]

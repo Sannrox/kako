@@ -1,17 +1,22 @@
 //! Worker manifest the sandboxed child reads from the scratch directory.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use crate::{Engine, WriteMode};
+use crate::{Engine, Input, Job, WriteMode};
 
 /// One staged input in the worker manifest.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub struct StagedInput {
     pub name: String,
     pub relative: String,
+    #[serde(default)]
+    pub markings: Vec<String>,
+    #[serde(default)]
+    pub column_markings: BTreeMap<String, Vec<String>>,
 }
 
 /// Manifest the worker child reads as `manifest.json`.
@@ -57,6 +62,35 @@ pub fn write_manifest_with(
     outputs: &[String],
     write_mode: WriteMode,
 ) -> Result<(), String> {
+    write_manifest_inputs(scratch, engine, sql, inputs, &[], outputs, write_mode)
+}
+
+/// Write the worker manifest, copying marking labels from `job`.
+pub fn write_manifest_from_job(
+    scratch: &Path,
+    job: &Job,
+    staged: &[(String, PathBuf)],
+) -> Result<(), String> {
+    write_manifest_inputs(
+        scratch,
+        job.engine,
+        &job.code,
+        staged,
+        &job.inputs,
+        &job.outputs,
+        job.write_mode,
+    )
+}
+
+fn write_manifest_inputs(
+    scratch: &Path,
+    engine: Engine,
+    sql: &str,
+    staged: &[(String, PathBuf)],
+    job_inputs: &[Input],
+    outputs: &[String],
+    write_mode: WriteMode,
+) -> Result<(), String> {
     let engine = match engine {
         Engine::DuckDbSql => "duckdb_sql",
         Engine::Mizuchi => "mizuchi",
@@ -65,8 +99,14 @@ pub fn write_manifest_with(
     let body = serde_json::json!({
         "engine": engine,
         "sql": sql,
-        "inputs": inputs.iter().map(|(name, relative)| {
-            serde_json::json!({ "name": name, "relative": relative.display().to_string() })
+        "inputs": staged.iter().map(|(name, relative)| {
+            let src = job_inputs.iter().find(|input| &input.name == name);
+            serde_json::json!({
+                "name": name,
+                "relative": relative.display().to_string(),
+                "markings": src.map(|input| input.markings.clone()).unwrap_or_default(),
+                "column_markings": src.map(|input| input.column_markings.clone()).unwrap_or_default(),
+            })
         }).collect::<Vec<_>>(),
         "outputs": outputs,
         "write_mode": write_mode.as_str(),

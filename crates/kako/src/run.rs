@@ -6,7 +6,6 @@ use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::digest::{hash_bytes, hash_file};
-use crate::engine;
 use crate::sandbox;
 use crate::stage::Scratch;
 use crate::{Engine, Failure, Job, JobSource, Output, QuotaKey, Receipt};
@@ -117,15 +116,12 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
         ));
     }
     let code_digest = hash_bytes(job.code.as_bytes());
-    engine::write_manifest_with(
-        scratch.path(),
-        job.engine,
-        &job.code,
-        &staged,
-        &job.outputs,
-        job.write_mode,
-    )
-    .map_err(Failure::Runner)?;
+    if job.engine != crate::Engine::Mizuchi {
+        kako_core::marking::refuse_under_marked(job, &kako_core::marking::input_union(job))
+            .map_err(Failure::Runner)?;
+    }
+    kako_core::manifest::write_manifest_from_job(scratch.path(), job, &staged)
+        .map_err(Failure::Runner)?;
     if let Some(site) = python_image
         .as_ref()
         .and_then(|image| image.site_packages.as_ref())
@@ -190,6 +186,12 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
         });
     }
     let lineage = load_lineage(job.engine, scratch.path()).map_err(Failure::Runner)?;
+    let required = if job.engine == crate::Engine::Mizuchi {
+        kako_core::marking::sql_union(job, lineage.as_ref()).map_err(Failure::Runner)?
+    } else {
+        kako_core::marking::input_union(job)
+    };
+    kako_core::marking::refuse_under_marked(job, &required).map_err(Failure::Runner)?;
     let receipt = Receipt {
         job_id: job.id.clone(),
         inputs: input_digests,
@@ -206,6 +208,9 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
         runtime_image: python_image.map(|image| image.id),
         isolation,
         credential_scope: None,
+        input_markings: kako_core::marking::input_receipt_map(job),
+        output_markings: kako_core::marking::output_receipt_map(job),
+        declassify: job.declassify.clone(),
     };
     Ok(CompletedRun {
         outputs,
@@ -354,6 +359,8 @@ mod tests {
             inputs: vec![Input {
                 name: "gone".into(),
                 path: parent.path().join("nope.csv"),
+                markings: Vec::new(),
+                column_markings: Default::default(),
             }],
             outputs: vec!["out.csv".into()],
             wall_clock: Duration::from_secs(5),
@@ -364,6 +371,8 @@ mod tests {
             runtime_image: None,
             write_mode: crate::WriteMode::Overwrite,
             isolation: crate::IsolationTier::LinuxNative,
+            output_markings: Default::default(),
+            declassify: None,
         };
         let mut source = Fake {
             jobs: vec![job],
@@ -388,6 +397,108 @@ mod tests {
     }
 
     #[test]
+    fn under_marked_output_is_refused_before_the_worker() {
+        let parent = tempfile::tempdir().unwrap();
+        let input = parent.path().join("orders.csv");
+        fs::write(&input, "id,ssn\n1,x\n").unwrap();
+        let job = Job {
+            id: "marks".into(),
+            engine: Engine::DuckDbSql,
+            code: "SELECT 1".into(),
+            inputs: vec![Input {
+                name: "orders".into(),
+                path: input,
+                markings: vec!["pii".into()],
+                column_markings: Default::default(),
+            }],
+            outputs: vec!["out.csv".into()],
+            wall_clock: Duration::from_secs(5),
+            cpu_time: None,
+            memory_bytes: None,
+            tenant_id: "local".into(),
+            namespace: "default".into(),
+            runtime_image: None,
+            write_mode: crate::WriteMode::Overwrite,
+            isolation: crate::IsolationTier::LinuxNative,
+            output_markings: Default::default(),
+            declassify: None,
+        };
+        let mut source = Fake {
+            jobs: vec![job],
+            fails: Vec::new(),
+        };
+        let config = RunnerConfig {
+            worker: PathBuf::from("/bin/false"),
+            scratch_parent: parent.path().to_path_buf(),
+        };
+        let finishes = run_source(&mut source, &config).unwrap();
+        assert!(
+            matches!(
+                &finishes[0],
+                JobFinish::Failed {
+                    failure: Failure::Runner(msg),
+                    ..
+                } if msg.contains("pii") && msg.contains("out.csv")
+            ),
+            "{finishes:?}"
+        );
+    }
+
+    #[test]
+    fn declassified_job_is_not_refused_before_the_worker() {
+        let parent = tempfile::tempdir().unwrap();
+        let input = parent.path().join("orders.csv");
+        fs::write(&input, "id\n1\n").unwrap();
+        let mut output_markings = std::collections::BTreeMap::new();
+        output_markings.insert("out.csv".into(), vec!["restricted".into()]);
+        let job = Job {
+            id: "dec".into(),
+            engine: Engine::DuckDbSql,
+            code: "SELECT 1".into(),
+            inputs: vec![Input {
+                name: "orders".into(),
+                path: input,
+                markings: vec!["pii".into(), "restricted".into()],
+                column_markings: Default::default(),
+            }],
+            outputs: vec!["out.csv".into()],
+            wall_clock: Duration::from_secs(5),
+            cpu_time: None,
+            memory_bytes: None,
+            tenant_id: "local".into(),
+            namespace: "default".into(),
+            runtime_image: None,
+            write_mode: crate::WriteMode::Overwrite,
+            isolation: crate::IsolationTier::LinuxNative,
+            output_markings,
+            declassify: Some(crate::DeclassifyDecision {
+                id: "dec-1".into(),
+                from: vec!["pii".into()],
+                reason: "public aggregate".into(),
+            }),
+        };
+        let mut source = Fake {
+            jobs: vec![job],
+            fails: Vec::new(),
+        };
+        let config = RunnerConfig {
+            worker: PathBuf::from("/bin/false"),
+            scratch_parent: parent.path().to_path_buf(),
+        };
+        let finishes = run_source(&mut source, &config).unwrap();
+        assert!(
+            matches!(
+                &finishes[0],
+                JobFinish::Failed {
+                    failure: Failure::Job(msg) | Failure::Runner(msg),
+                    ..
+                } if !msg.contains("missing marking")
+            ),
+            "declassify must pass the pre-sandbox refuse so the worker runs: {finishes:?}"
+        );
+    }
+
+    #[test]
     fn userspace_floor_fails_closed_before_scratch() {
         if sandbox::select_backend_for(crate::IsolationTier::Userspace).is_ok() {
             return;
@@ -407,6 +518,8 @@ mod tests {
             runtime_image: None,
             write_mode: crate::WriteMode::Overwrite,
             isolation: crate::IsolationTier::Userspace,
+            output_markings: Default::default(),
+            declassify: None,
         };
         match execute_job(
             &job,
@@ -447,6 +560,8 @@ mod tests {
             runtime_image: Some(pin),
             write_mode: crate::WriteMode::Overwrite,
             isolation: crate::IsolationTier::LinuxNative,
+            output_markings: Default::default(),
+            declassify: None,
         };
         match execute_job(
             &job,
@@ -480,6 +595,8 @@ mod tests {
             runtime_image: None,
             write_mode: crate::WriteMode::Overwrite,
             isolation: crate::IsolationTier::LinuxNative,
+            output_markings: Default::default(),
+            declassify: None,
         };
         let mut source = Fake {
             jobs: vec![job],
@@ -530,6 +647,8 @@ mod tests {
             runtime_image: None,
             write_mode: crate::WriteMode::Overwrite,
             isolation: crate::IsolationTier::LinuxNative,
+            output_markings: Default::default(),
+            declassify: None,
         }
     }
 
@@ -543,6 +662,8 @@ mod tests {
             inputs: vec![Input {
                 name: "gone".into(),
                 path: PathBuf::from("/nonexistent/kako-fair-missing.csv"),
+                markings: Vec::new(),
+                column_markings: Default::default(),
             }],
             outputs: vec!["out.csv".into()],
             wall_clock: Duration::from_secs(5),
@@ -553,6 +674,8 @@ mod tests {
             runtime_image: None,
             write_mode: crate::WriteMode::Overwrite,
             isolation: crate::IsolationTier::LinuxNative,
+            output_markings: Default::default(),
+            declassify: None,
         }
     }
 

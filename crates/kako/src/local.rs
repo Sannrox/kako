@@ -1,6 +1,6 @@
 //! Local/CLI job source: one JSON job file, outputs written to a directory.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
@@ -44,7 +44,14 @@ struct JobFile {
     sql: Option<String>,
     code: Option<String>,
     inputs: HashMap<String, String>,
+    #[serde(default)]
+    input_markings: HashMap<String, Vec<String>>,
+    #[serde(default)]
+    input_column_markings: HashMap<String, HashMap<String, Vec<String>>>,
     outputs: Vec<String>,
+    #[serde(default)]
+    output_markings: HashMap<String, Vec<String>>,
+    declassify: Option<kako_core::DeclassifyDecision>,
     timeout_ms: Option<u64>,
     cpu_time_secs: Option<u64>,
     memory_bytes: Option<u64>,
@@ -273,9 +280,26 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
             )));
         }
         let input_path = base.join(rel);
+        let markings = kako_core::marking::normalize(
+            parsed
+                .input_markings
+                .get(&name)
+                .cloned()
+                .unwrap_or_default(),
+        );
+        let column_markings = parsed
+            .input_column_markings
+            .get(&name)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(column, labels)| (column, kako_core::marking::normalize(labels)))
+            .collect();
         inputs.push(Input {
             name,
             path: input_path,
+            markings,
+            column_markings,
         });
     }
     let mut seen_outputs = HashSet::new();
@@ -331,6 +355,41 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
             "write_mode is only valid for mizuchi jobs".into(),
         ));
     }
+    let mut output_markings = BTreeMap::new();
+    for (name, labels) in parsed.output_markings {
+        if !parsed.outputs.iter().any(|output| output == &name) {
+            return Err(LocalError(format!(
+                "output_markings names unknown output `{name}`"
+            )));
+        }
+        output_markings.insert(name, kako_core::marking::normalize(labels));
+    }
+    for name in parsed.input_markings.keys() {
+        if !parsed.inputs.contains_key(name) {
+            return Err(LocalError(format!(
+                "input_markings names unknown input `{name}`"
+            )));
+        }
+    }
+    for name in parsed.input_column_markings.keys() {
+        if !parsed.inputs.contains_key(name) {
+            return Err(LocalError(format!(
+                "input_column_markings names unknown input `{name}`"
+            )));
+        }
+    }
+    let declassify = match parsed.declassify {
+        Some(decision) if decision.id.is_empty() || decision.from.is_empty() => {
+            return Err(LocalError(
+                "declassify requires a nonempty id and from list".into(),
+            ));
+        }
+        Some(mut decision) => {
+            decision.from = kako_core::marking::normalize(decision.from);
+            Some(decision)
+        }
+        None => None,
+    };
     Ok(Job {
         id,
         engine,
@@ -345,6 +404,8 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
         namespace,
         runtime_image,
         isolation,
+        output_markings,
+        declassify,
     })
 }
 
@@ -526,6 +587,39 @@ mod tests {
     }
 
     #[test]
+    fn load_job_reads_markings_and_declassify() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.csv"), "id,ssn\n1,x\n").unwrap();
+        let job_path = dir.path().join("job.json");
+        fs::write(
+            &job_path,
+            r#"{
+              "sql": "SELECT id FROM in",
+              "inputs": {"in": "in.csv"},
+              "outputs": ["out.csv"],
+              "input_markings": {"in": ["restricted"]},
+              "input_column_markings": {"in": {"ssn": ["pii"]}},
+              "output_markings": {"out.csv": ["restricted"]},
+              "declassify": {"id": "dec-1", "from": ["pii"], "reason": "drop identifier"}
+            }"#,
+        )
+        .unwrap();
+        let job = load_job(&job_path).unwrap();
+        assert_eq!(job.inputs[0].markings, ["restricted"]);
+        assert_eq!(
+            job.inputs[0].column_markings.get("ssn").unwrap(),
+            &["pii".to_string()]
+        );
+        assert_eq!(
+            job.output_markings.get("out.csv").unwrap(),
+            &["restricted".to_string()]
+        );
+        let dec = job.declassify.expect("declassify");
+        assert_eq!(dec.id, "dec-1");
+        assert_eq!(dec.from, ["pii"]);
+    }
+
+    #[test]
     fn load_job_reads_per_run_limits() {
         let dir = tempfile::tempdir().unwrap();
         fs::write(dir.path().join("in.csv"), "a\n1\n").unwrap();
@@ -649,6 +743,8 @@ mod tests {
             runtime_image: None,
             write_mode: WriteMode::Overwrite,
             isolation: IsolationTier::LinuxNative,
+            output_markings: Default::default(),
+            declassify: None,
         };
         let outputs = vec![Output {
             name: "nested/out.csv".into(),
@@ -671,6 +767,9 @@ mod tests {
             runtime_image: None,
             isolation: IsolationTier::LinuxNative,
             credential_scope: None,
+            input_markings: Vec::new(),
+            output_markings: Vec::new(),
+            declassify: None,
         };
         let err = source.complete(&job, &outputs, &receipt).unwrap_err();
         assert!(err.0.contains("file name"), "{err}");
@@ -893,6 +992,9 @@ mod tests {
             runtime_image: None,
             isolation: IsolationTier::LinuxNative,
             credential_scope: None,
+            input_markings: Vec::new(),
+            output_markings: Vec::new(),
+            declassify: None,
         };
         source.complete(&job, &outputs, &receipt).unwrap();
         let json = fs::read_to_string(out.join("receipt.json")).unwrap();

@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 
 use arrow::csv::WriterBuilder;
 use mizuchi::{
-    CancelToken, CsvReadOptions, Error, ParquetReadOptions, QueryReport, Session, SessionConfig,
-    VERSION,
+    CancelToken, CsvReadOptions, Error, ParquetReadOptions, PolicyContext, QueryReport, Session,
+    SessionConfig, VERSION,
 };
 
 use kako_core::manifest::StagedInput;
@@ -66,7 +66,8 @@ fn execute_with(
     };
     let mut session = Session::from_config(cfg)
         .map_err(map_error)?
-        .with_cancel(cancel);
+        .with_cancel(cancel)
+        .with_policy(policy_for(inputs));
     for input in inputs {
         let path = scratch_abs.join(&input.relative);
         register_input(&mut session, &input.name, &path)?;
@@ -156,6 +157,22 @@ fn relativize(scratch: &Path, path: &str) -> String {
     path.replace('\\', "/")
 }
 
+fn policy_for(inputs: &[StagedInput]) -> PolicyContext {
+    let mut policy = PolicyContext::new("kako", "kako", "kako");
+    for input in inputs {
+        policy = policy.allow_table(&input.name);
+        for label in &input.markings {
+            policy = policy.mark_table(&input.name, label);
+        }
+        for (column, labels) in &input.column_markings {
+            for label in labels {
+                policy = policy.mark_column(&input.name, column, label);
+            }
+        }
+    }
+    policy
+}
+
 pub(crate) fn lineage_from_report(report: &QueryReport, scratch: &Path) -> Lineage {
     Lineage {
         plan: report.plan.clone(),
@@ -179,6 +196,14 @@ pub(crate) fn lineage_from_report(report: &QueryReport, scratch: &Path) -> Linea
                 rows: write.rows,
                 bytes: write.bytes,
                 commit_id: write.commit_id.clone(),
+            })
+            .collect(),
+        column_markings: report
+            .column_markings
+            .iter()
+            .map(|column| kako_core::ColumnMarking {
+                name: column.name.clone(),
+                labels: column.labels.clone(),
             })
             .collect(),
     }
@@ -386,6 +411,7 @@ mod tests {
             .map(|(name, relative)| StagedInput {
                 name: name.clone(),
                 relative: relative.display().to_string(),
+                ..Default::default()
             })
             .collect()
     }
@@ -451,10 +477,14 @@ mod tests {
                 Input {
                     name: "customers".into(),
                     path: bar.join("customers.csv"),
+                    markings: Vec::new(),
+                    column_markings: Default::default(),
                 },
                 Input {
                     name: "orders".into(),
                     path: bar.join("orders.csv"),
+                    markings: Vec::new(),
+                    column_markings: Default::default(),
                 },
             ])
             .unwrap();
@@ -486,10 +516,14 @@ mod tests {
                 Input {
                     name: "customers".into(),
                     path: bar.join("customers.csv"),
+                    markings: Vec::new(),
+                    column_markings: Default::default(),
                 },
                 Input {
                     name: "orders".into(),
                     path: bar.join("orders.csv"),
+                    markings: Vec::new(),
+                    column_markings: Default::default(),
                 },
             ])
             .unwrap();
@@ -522,6 +556,9 @@ mod tests {
             runtime_image: None,
             isolation: kako_core::IsolationTier::LinuxNative,
             credential_scope: None,
+            input_markings: Vec::new(),
+            output_markings: Vec::new(),
+            declassify: None,
         };
         let json = kako_core::receipt::to_json(&receipt).unwrap();
         let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -554,6 +591,8 @@ mod tests {
             .stage_inputs(&[Input {
                 name: "in".into(),
                 path: input.clone(),
+                markings: Vec::new(),
+                column_markings: Default::default(),
             }])
             .unwrap();
         let first = run_copy_with_mode(&scratch, &staged, sql, WriteMode::Overwrite);
@@ -563,6 +602,8 @@ mod tests {
             .stage_inputs(&[Input {
                 name: "in".into(),
                 path: input.clone(),
+                markings: Vec::new(),
+                column_markings: Default::default(),
             }])
             .unwrap();
         let second = run_copy_with_mode(&scratch2, &staged2, sql, WriteMode::Overwrite);
@@ -585,6 +626,8 @@ mod tests {
             .stage_inputs(&[Input {
                 name: "in".into(),
                 path: input,
+                markings: Vec::new(),
+                column_markings: Default::default(),
             }])
             .unwrap();
         let error = run_sql(
@@ -608,6 +651,8 @@ mod tests {
             .stage_inputs(&[Input {
                 name: "in".into(),
                 path: input,
+                markings: Vec::new(),
+                column_markings: Default::default(),
             }])
             .unwrap();
         let cancel = CancelToken::new();
@@ -617,6 +662,7 @@ mod tests {
             .map(|(name, relative)| StagedInput {
                 name: name.clone(),
                 relative: relative.display().to_string(),
+                ..Default::default()
             })
             .collect();
         let error = execute_with(
@@ -644,10 +690,14 @@ mod tests {
                 Input {
                     name: "customers".into(),
                     path: bar.join("customers.csv"),
+                    markings: Vec::new(),
+                    column_markings: Default::default(),
                 },
                 Input {
                     name: "orders".into(),
                     path: bar.join("orders.csv"),
+                    markings: Vec::new(),
+                    column_markings: Default::default(),
                 },
             ])
             .unwrap();
@@ -656,6 +706,7 @@ mod tests {
             .map(|(name, relative)| StagedInput {
                 name: name.clone(),
                 relative: relative.display().to_string(),
+                ..Default::default()
             })
             .collect();
         let sql = fs::read_to_string(bar.join("join-mizuchi.json")).unwrap();
@@ -751,6 +802,112 @@ mod tests {
             path.starts_with("inputs/"),
             "path should be scratch-relative, got {path}"
         );
+    }
+
+    #[test]
+    fn sql_propagates_column_markings_not_the_whole_table() {
+        let parent = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        let input = src.path().join("orders.csv");
+        fs::write(&input, "id,ssn\n1,000-00-0001\n").unwrap();
+        let scratch = Scratch::create(parent.path(), "col-unmarked").unwrap();
+        let staged = scratch
+            .stage_inputs(&[Input {
+                name: "orders".into(),
+                path: input.clone(),
+                markings: Vec::new(),
+                column_markings: Default::default(),
+            }])
+            .unwrap();
+        let mut inputs = as_inputs(&staged);
+        inputs[0]
+            .column_markings
+            .insert("ssn".into(), vec!["pii".into()]);
+        execute(
+            "COPY (SELECT id FROM orders) TO 'outputs/ids.csv' (HEADER, DELIMITER ',');",
+            &inputs,
+            scratch.path(),
+            WriteMode::Overwrite,
+        )
+        .unwrap();
+        let unmarked: kako_core::Lineage =
+            serde_json::from_str(&fs::read_to_string(scratch.path().join("lineage.json")).unwrap())
+                .unwrap();
+        let id_col = unmarked
+            .column_markings
+            .iter()
+            .find(|column| column.name.eq_ignore_ascii_case("id"))
+            .expect("id column");
+        assert!(
+            id_col.labels.is_empty(),
+            "selecting unmarked id must not carry pii: {id_col:?}"
+        );
+
+        let scratch2 = Scratch::create(parent.path(), "col-marked").unwrap();
+        let staged2 = scratch2
+            .stage_inputs(&[Input {
+                name: "orders".into(),
+                path: input,
+                markings: Vec::new(),
+                column_markings: Default::default(),
+            }])
+            .unwrap();
+        let mut inputs2 = as_inputs(&staged2);
+        inputs2[0]
+            .column_markings
+            .insert("ssn".into(), vec!["pii".into()]);
+        execute(
+            "COPY (SELECT ssn FROM orders) TO 'outputs/ssn.csv' (HEADER, DELIMITER ',');",
+            &inputs2,
+            scratch2.path(),
+            WriteMode::Overwrite,
+        )
+        .unwrap();
+        let marked: kako_core::Lineage = serde_json::from_str(
+            &fs::read_to_string(scratch2.path().join("lineage.json")).unwrap(),
+        )
+        .unwrap();
+        let ssn_col = marked
+            .column_markings
+            .iter()
+            .find(|column| column.name.eq_ignore_ascii_case("ssn"))
+            .expect("ssn column");
+        assert!(
+            ssn_col.labels.iter().any(|label| label == "pii"),
+            "{ssn_col:?}"
+        );
+        let job = kako_core::Job {
+            id: "sql-marks".into(),
+            engine: kako_core::Engine::Mizuchi,
+            code: "SELECT ssn FROM orders".into(),
+            inputs: vec![Input {
+                name: "orders".into(),
+                path: PathBuf::from("orders.csv"),
+                markings: Vec::new(),
+                column_markings: {
+                    let mut columns = std::collections::BTreeMap::new();
+                    columns.insert("ssn".into(), vec!["pii".into()]);
+                    columns
+                },
+            }],
+            outputs: vec!["ssn.csv".into()],
+            write_mode: WriteMode::Overwrite,
+            wall_clock: std::time::Duration::from_secs(5),
+            cpu_time: None,
+            memory_bytes: None,
+            tenant_id: "t".into(),
+            namespace: "ns".into(),
+            runtime_image: None,
+            isolation: kako_core::IsolationTier::LinuxNative,
+            output_markings: Default::default(),
+            declassify: None,
+        };
+        let error = kako_core::marking::refuse_under_marked(
+            &job,
+            &kako_core::marking::sql_union(&job, Some(&marked)).unwrap(),
+        )
+        .unwrap_err();
+        assert!(error.contains("pii"), "{error}");
     }
 
     #[test]

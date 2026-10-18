@@ -485,6 +485,8 @@ mod tests {
             inputs: vec![Input {
                 name: "gone".into(),
                 path: "/nonexistent/kako-pool-missing.csv".into(),
+                markings: Vec::new(),
+                column_markings: Default::default(),
             }],
             outputs: vec!["out.csv".into()],
             write_mode: WriteMode::Overwrite,
@@ -495,6 +497,8 @@ mod tests {
             namespace: "default".into(),
             runtime_image: None,
             isolation: IsolationTier::LinuxNative,
+            output_markings: Default::default(),
+            declassify: None,
         }
     }
 
@@ -766,6 +770,9 @@ mod tests {
             runtime_image: None,
             isolation: job.isolation,
             credential_scope: None,
+            input_markings: Vec::new(),
+            output_markings: Vec::new(),
+            declassify: None,
         }
     }
 }

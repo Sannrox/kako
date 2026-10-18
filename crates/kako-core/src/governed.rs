@@ -156,8 +156,8 @@ pub fn transform_run(job: &Job, receipt: &Receipt) -> TransformRun {
         rows_out,
         lineage_parent: String::new(),
         created_at_ms: unix_ms(receipt.started_at),
-        markings_in: String::new(),
-        markings_out: String::new(),
+        markings_in: crate::marking::joined(&receipt.input_markings),
+        markings_out: crate::marking::joined(&receipt.output_markings),
         profile: ISOLATED_CLASS.into(),
         engine: spec.isolated_process.engine,
         runtime_image: receipt
@@ -273,10 +273,14 @@ mod tests {
                 Input {
                     name: "customers".into(),
                     path: PathBuf::from("customers.csv"),
+                    markings: Vec::new(),
+                    column_markings: Default::default(),
                 },
                 Input {
                     name: "orders".into(),
                     path: PathBuf::from("orders.csv"),
+                    markings: Vec::new(),
+                    column_markings: Default::default(),
                 },
             ],
             outputs: vec!["totals.csv".into()],
@@ -288,6 +292,8 @@ mod tests {
             namespace: "ops".into(),
             runtime_image: None,
             isolation: IsolationTier::LinuxNative,
+            output_markings: Default::default(),
+            declassify: None,
         }
     }
 
@@ -299,6 +305,8 @@ mod tests {
             inputs: vec![Input {
                 name: "events".into(),
                 path: PathBuf::from("events.csv"),
+                markings: Vec::new(),
+                column_markings: Default::default(),
             }],
             outputs: vec!["out.csv".into()],
             write_mode: WriteMode::Overwrite,
@@ -309,6 +317,8 @@ mod tests {
             namespace: "ops".into(),
             runtime_image: Some("python-lockfile:sha256:aa".into()),
             isolation: IsolationTier::LinuxNative,
+            output_markings: Default::default(),
+            declassify: None,
         }
     }
 
@@ -338,6 +348,9 @@ mod tests {
             runtime_image: job.runtime_image.clone(),
             isolation: job.isolation,
             credential_scope: None,
+            input_markings: Vec::new(),
+            output_markings: Vec::new(),
+            declassify: None,
         }
     }
 
@@ -510,6 +523,7 @@ mod tests {
                     commit_id: "sha256:multi".into(),
                 },
             ],
+            column_markings: Vec::new(),
         });
         let run = transform_run(&job, &receipt);
         assert_eq!(run.rows_out, 8);

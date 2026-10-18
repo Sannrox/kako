@@ -65,6 +65,8 @@ mod tests {
             .stage_inputs(&[Input {
                 name: "in".into(),
                 path: input,
+                markings: Vec::new(),
+                column_markings: Default::default(),
             }])
             .unwrap();
         write_manifest(
