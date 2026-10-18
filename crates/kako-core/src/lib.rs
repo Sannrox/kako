@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime};
 mod crate_graph;
 pub mod digest;
 pub mod fair;
+pub mod governed;
 pub mod isolation;
 pub mod manifest;
 pub mod receipt;
@@ -29,6 +30,17 @@ pub enum Engine {
     Mizuchi,
     /// Python (Polars, pandas) executed in a sandboxed interpreter.
     Python,
+}
+
+impl Engine {
+    /// JobSpec / worker spelling (`duckdb_sql`, `mizuchi`, `python`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DuckDbSql => "duckdb_sql",
+            Self::Mizuchi => "mizuchi",
+            Self::Python => "python",
+        }
+    }
 }
 
 /// How the mizuchi adapter commits a job's output. Omitted jobs overwrite.

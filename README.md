@@ -159,6 +159,10 @@ Every run produces a receipt with:
 - start time and duration.
 
 A receipt is enough to check what produced an output and to rerun it.
+`kako_core::governed` maps it onto the Sekai isolated-process JobSpec and
+run receipt
+([ADR 0012](docs/decisions/0012-governed-receipt-mapping.md),
+[governed-receipt.md](docs/governed-receipt.md)).
 
 ## Non-goals
 

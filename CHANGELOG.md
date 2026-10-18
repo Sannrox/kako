@@ -26,6 +26,13 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- kako jobs and receipts map onto the Sekai isolated-process JobSpec and
+  `TransformRun` JSON (`kako_core::governed`). The JobSpec digest uses the
+  plane `definition_digest` algorithm. SQL and Python receipts deserialize
+  as that run-receipt shape
+  ([ADR 0012](docs/decisions/0012-governed-receipt-mapping.md),
+  [governed-receipt.md](docs/governed-receipt.md)).
+
 - `kako serve`: `/health`, `/ready`, and `/version` on a long-running
   process; SIGTERM drains (stop claiming, finish the current job or hand it
   back with `JobSource::release`, then exit). Ready means the process will
