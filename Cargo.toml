@@ -31,7 +31,11 @@ kako-source-sekai = { path = "crates/kako-source-sekai" }
 arrow = { version = "60.0.0", default-features = false, features = ["csv"] }
 duckdb = { version = "=1.10506.0", default-features = false, features = ["bundled", "parquet"] }
 kekkai = { git = "https://github.com/Sannrox/kekkai", rev = "73e24f580ed6223b7e8395793e6f2317eb8edfd9", default-features = false, features = ["guest"] }
-mizuchi = { git = "https://github.com/Sannrox/mizuchi", rev = "c4ae4a06e6275686173bcf1be44bdf328b22d5e5", default-features = false }
+mizuchi = { git = "https://github.com/Sannrox/mizuchi", rev = "1c2e13030bfd94f2cdea6ac8aec277f651391a47", default-features = false }
+# Git pin until sekai-keys is on crates.io.
+sekai-keys = { git = "https://github.com/Sannrox/sekai-chisei.git", rev = "1b2e12789a2b360759a087252367cf4bc633caf0" }
+aes-gcm = "0.10"
+rand = { version = "0.8", features = ["std"] }
 serde = { version = "1", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
 sha2 = { version = "0.10", default-features = false, features = ["std"] }

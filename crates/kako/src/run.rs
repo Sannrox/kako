@@ -3,20 +3,35 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
+use crate::crypto::{KeyProvider, require_regular_output, seal_output, unwrap_job_dek};
 use crate::digest::{hash_bytes, hash_file};
 use crate::sandbox;
 use crate::stage::Scratch;
 use crate::{Engine, Failure, Job, JobSource, Output, QuotaKey, Receipt};
 
 /// How the runner finds a worker binary and where it puts scratch trees.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RunnerConfig {
     /// kako binary that implements `--internal-execute`.
     pub worker: PathBuf,
     /// Parent directory for per-run scratch trees.
     pub scratch_parent: PathBuf,
+    /// Provider that unwraps a [`crate::JobKeyClaim`]. Held in the runner
+    /// process; never copied into the scratch tree or sandbox environment.
+    pub keys: Option<Arc<dyn KeyProvider + Send + Sync>>,
+}
+
+impl std::fmt::Debug for RunnerConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunnerConfig")
+            .field("worker", &self.worker)
+            .field("scratch_parent", &self.scratch_parent)
+            .field("keys", &self.keys.as_ref().map(|_| "set"))
+            .finish()
+    }
 }
 
 impl RunnerConfig {
@@ -26,6 +41,7 @@ impl RunnerConfig {
         Ok(Self {
             worker,
             scratch_parent,
+            keys: None,
         })
     }
 }
@@ -105,6 +121,16 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
     };
     let started_at = SystemTime::now();
     let started = Instant::now();
+    let job_dek = match job.encryption.as_ref() {
+        Some(claim) => {
+            let provider = config
+                .keys
+                .as_ref()
+                .ok_or_else(|| Failure::Runner("encrypted job requires a key provider".into()))?;
+            Some((claim, unwrap_job_dek(provider, job, claim)?))
+        }
+        None => None,
+    };
     let scratch = Scratch::create(&config.scratch_parent, &job.id).map_err(Failure::Runner)?;
     let staged = scratch.stage_inputs(&job.inputs).map_err(Failure::Runner)?;
     let mut input_digests = Vec::new();
@@ -172,10 +198,9 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
     let mut output_digests = Vec::new();
     for name in &job.outputs {
         let path = scratch.outputs_dir().join(name);
-        if !path.is_file() {
-            return Err(Failure::Job(format!(
-                "expected output `{name}` was not written"
-            )));
+        require_regular_output(&path, name)?;
+        if let Some((claim, dek)) = job_dek.as_ref() {
+            seal_output(&path, dek, claim, &job.id)?;
         }
         let digest = hash_file(&path).map_err(Failure::Runner)?;
         output_digests.push((name.clone(), digest.clone()));
@@ -211,6 +236,12 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
         input_markings: kako_core::marking::input_receipt_map(job),
         output_markings: kako_core::marking::output_receipt_map(job),
         declassify: job.declassify.clone(),
+        key_ids: job
+            .encryption
+            .as_ref()
+            .map(|claim| vec![claim.dek_id.clone(), claim.kek_id.clone()])
+            .unwrap_or_default(),
+        key_state: job.encryption.as_ref().map(|_| "ready".to_string()),
     };
     Ok(CompletedRun {
         outputs,
@@ -373,6 +404,7 @@ mod tests {
             isolation: crate::IsolationTier::LinuxNative,
             output_markings: Default::default(),
             declassify: None,
+            encryption: None,
         };
         let mut source = Fake {
             jobs: vec![job],
@@ -381,6 +413,7 @@ mod tests {
         let config = RunnerConfig {
             worker: PathBuf::from("/bin/false"),
             scratch_parent: parent.path().to_path_buf(),
+            keys: None,
         };
         let finishes = run_source(&mut source, &config).unwrap();
         assert!(
@@ -422,6 +455,7 @@ mod tests {
             isolation: crate::IsolationTier::LinuxNative,
             output_markings: Default::default(),
             declassify: None,
+            encryption: None,
         };
         let mut source = Fake {
             jobs: vec![job],
@@ -430,6 +464,7 @@ mod tests {
         let config = RunnerConfig {
             worker: PathBuf::from("/bin/false"),
             scratch_parent: parent.path().to_path_buf(),
+            keys: None,
         };
         let finishes = run_source(&mut source, &config).unwrap();
         assert!(
@@ -476,6 +511,7 @@ mod tests {
                 from: vec!["pii".into()],
                 reason: "public aggregate".into(),
             }),
+            encryption: None,
         };
         let mut source = Fake {
             jobs: vec![job],
@@ -484,6 +520,7 @@ mod tests {
         let config = RunnerConfig {
             worker: PathBuf::from("/bin/false"),
             scratch_parent: parent.path().to_path_buf(),
+            keys: None,
         };
         let finishes = run_source(&mut source, &config).unwrap();
         assert!(
@@ -520,12 +557,14 @@ mod tests {
             isolation: crate::IsolationTier::Userspace,
             output_markings: Default::default(),
             declassify: None,
+            encryption: None,
         };
         match execute_job(
             &job,
             &RunnerConfig {
                 worker: PathBuf::from("/bin/false"),
                 scratch_parent: parent.path().to_path_buf(),
+                keys: None,
             },
         ) {
             Err(Failure::Runner(message)) => {
@@ -562,12 +601,14 @@ mod tests {
             isolation: crate::IsolationTier::LinuxNative,
             output_markings: Default::default(),
             declassify: None,
+            encryption: None,
         };
         match execute_job(
             &job,
             &RunnerConfig {
                 worker: PathBuf::from("/bin/false"),
                 scratch_parent: parent.path().to_path_buf(),
+                keys: None,
             },
         ) {
             Err(Failure::Runner(message)) => {
@@ -597,6 +638,7 @@ mod tests {
             isolation: crate::IsolationTier::LinuxNative,
             output_markings: Default::default(),
             declassify: None,
+            encryption: None,
         };
         let mut source = Fake {
             jobs: vec![job],
@@ -605,6 +647,7 @@ mod tests {
         let config = RunnerConfig {
             worker: PathBuf::from("/bin/false"),
             scratch_parent: parent.path().to_path_buf(),
+            keys: None,
         };
         let finishes = run_source(&mut source, &config).unwrap();
         assert!(
@@ -649,6 +692,7 @@ mod tests {
             isolation: crate::IsolationTier::LinuxNative,
             output_markings: Default::default(),
             declassify: None,
+            encryption: None,
         }
     }
 
@@ -676,6 +720,7 @@ mod tests {
             isolation: crate::IsolationTier::LinuxNative,
             output_markings: Default::default(),
             declassify: None,
+            encryption: None,
         }
     }
 
@@ -788,6 +833,7 @@ mod tests {
         let config = RunnerConfig {
             worker: PathBuf::from("/bin/false"),
             scratch_parent: parent.path().to_path_buf(),
+            keys: None,
         };
         let finishes = run_source(&mut source, &config).unwrap();
         assert_eq!(finishes.len(), flood + 1);
@@ -863,6 +909,7 @@ mod tests {
             let config = RunnerConfig {
                 worker: PathBuf::from("/bin/false"),
                 scratch_parent: parent.path().to_path_buf(),
+                keys: None,
             };
             let finishes = run_source(&mut source, &config).unwrap();
             assert_eq!(finishes.len(), FLOOD + others.len());
@@ -898,6 +945,93 @@ mod tests {
         assert!(
             worst_delay <= max_delay,
             "worst non-flood start delay {worst_delay} exceeds bound {max_delay}"
+        );
+    }
+
+    fn keyed_job(id: &str, tenant: &str, claim: crate::JobKeyClaim) -> Job {
+        Job {
+            id: id.into(),
+            engine: Engine::DuckDbSql,
+            code: "SELECT 1".into(),
+            inputs: vec![],
+            outputs: vec!["out.csv".into()],
+            wall_clock: Duration::from_secs(5),
+            cpu_time: None,
+            memory_bytes: None,
+            tenant_id: tenant.into(),
+            namespace: "default".into(),
+            runtime_image: None,
+            write_mode: crate::WriteMode::Overwrite,
+            isolation: crate::IsolationTier::LinuxNative,
+            output_markings: Default::default(),
+            declassify: None,
+            encryption: Some(claim),
+        }
+    }
+
+    #[test]
+    fn revoked_key_fails_before_sandbox() {
+        let provider = Arc::new(
+            crate::crypto::MemoryKeyProvider::new(crate::crypto::RuntimeProfile::Development)
+                .unwrap(),
+        );
+        let tenant = crate::crypto::TenantId::new("acme").unwrap();
+        let dek = crate::crypto::Dek::generate();
+        let wrapped = provider
+            .wrap(&tenant, crate::crypto::KeyPurpose::Store, &dek)
+            .unwrap();
+        provider.revoke_dek(&wrapped.dek_id).unwrap();
+        let claim = crate::JobKeyClaim {
+            wrapped_dek: serde_json::to_string(&wrapped).unwrap(),
+            dek_id: wrapped.dek_id.as_str().to_string(),
+            kek_id: provider.describe().kek_id.as_str().to_string(),
+        };
+        let parent = tempfile::tempdir().unwrap();
+        let err = match execute_job(
+            &keyed_job("revoked", "acme", claim),
+            &RunnerConfig {
+                worker: PathBuf::from("/bin/false"),
+                scratch_parent: parent.path().to_path_buf(),
+                keys: Some(provider),
+            },
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("expected revoked key to fail"),
+        };
+        assert!(
+            matches!(err, Failure::KeyRevoked { ref dek_id, .. } if dek_id == wrapped.dek_id.as_str()),
+            "{err}"
+        );
+        let leftovers: Vec<_> = fs::read_dir(parent.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().starts_with("kako-run-"))
+            .collect();
+        assert!(leftovers.is_empty(), "scratch leftover: {leftovers:?}");
+    }
+
+    #[test]
+    fn encrypted_job_without_provider_fails_closed() {
+        let claim = crate::JobKeyClaim {
+            wrapped_dek: "{}".into(),
+            dek_id: "dek".into(),
+            kek_id: "kek".into(),
+        };
+        let parent = tempfile::tempdir().unwrap();
+        let err = match execute_job(
+            &keyed_job("no-provider", "acme", claim),
+            &RunnerConfig {
+                worker: PathBuf::from("/bin/false"),
+                scratch_parent: parent.path().to_path_buf(),
+                keys: None,
+            },
+        ) {
+            Err(err) => err,
+            Ok(_) => panic!("expected encrypted job without provider to fail"),
+        };
+        assert!(
+            matches!(err, Failure::Runner(ref msg) if msg.contains("key provider")),
+            "{err}"
         );
     }
 }

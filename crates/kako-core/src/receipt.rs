@@ -10,7 +10,8 @@ use crate::{Lineage, Receipt};
 /// Schema 3 adds required `isolation` (the tier that ran). Schema 4 adds
 /// optional `credential_scope` (the job-scoped credential id, never the secret).
 /// Schema 5 adds input/output markings and an optional declassify decision.
-const RECEIPT_VERSION: u32 = 5;
+/// Schema 6 adds optional `key_ids` and `key_state` for encrypted runs.
+const RECEIPT_VERSION: u32 = 6;
 
 #[derive(Serialize)]
 struct FileReceipt<'a> {
@@ -39,6 +40,10 @@ struct FileReceipt<'a> {
     output_markings: BTreeMap<&'a str, Vec<&'a str>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     declassify: Option<&'a crate::DeclassifyDecision>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    key_ids: Vec<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    key_state: Option<&'a str>,
 }
 
 /// Serialize a receipt as stable JSON (sorted maps, trailing newline).
@@ -84,6 +89,8 @@ pub fn to_json(receipt: &Receipt) -> Result<String, String> {
             .map(|(name, labels)| (name.as_str(), labels.iter().map(String::as_str).collect()))
             .collect(),
         declassify: receipt.declassify.as_ref(),
+        key_ids: receipt.key_ids.iter().map(String::as_str).collect(),
+        key_state: receipt.key_state.as_deref(),
     };
     let mut json = serde_json::to_string_pretty(&body)
         .map_err(|error| format!("serialize receipt: {error}"))?;
@@ -118,10 +125,12 @@ mod tests {
             input_markings: Vec::new(),
             output_markings: Vec::new(),
             declassify: None,
+            key_ids: Vec::new(),
+            key_state: None,
         };
         let json = to_json(&receipt).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-        assert_eq!(v["receipt_version"], 5);
+        assert_eq!(v["receipt_version"], 6);
         assert_eq!(v["job_id"], "j1");
         assert_eq!(v["tenant_id"], "t");
         assert_eq!(v["namespace"], "ns");
@@ -137,6 +146,8 @@ mod tests {
         assert!(v.get("runtime_image").is_none(), "{json}");
         assert!(v.get("credential_scope").is_none(), "{json}");
         assert_eq!(v["isolation"], "linux_native");
+        assert!(v.get("key_ids").is_none(), "{json}");
+        assert!(v.get("key_state").is_none(), "{json}");
     }
 
     #[test]
@@ -164,6 +175,8 @@ mod tests {
                 from: vec!["secret".into()],
                 reason: "public aggregate".into(),
             }),
+            key_ids: Vec::new(),
+            key_state: None,
         };
         let json = to_json(&receipt).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -177,5 +190,38 @@ mod tests {
         assert_eq!(v["declassify"]["id"], "dec-1");
         assert_eq!(v["declassify"]["from"], serde_json::json!(["secret"]));
         assert_eq!(v["declassify"]["reason"], "public aggregate");
+        assert!(v.get("key_ids").is_none(), "{json}");
+        assert!(v.get("key_state").is_none(), "{json}");
+    }
+
+    #[test]
+    fn json_echoes_key_ids() {
+        let receipt = Receipt {
+            job_id: "j1".into(),
+            tenant_id: "t".into(),
+            namespace: "ns".into(),
+            inputs: vec![],
+            code: Digest("sha256:bb".into()),
+            engine_version: "duckdb 1.4.5".into(),
+            outputs: vec![],
+            started_at: SystemTime::UNIX_EPOCH,
+            duration: Duration::from_millis(1),
+            cpu_usec: None,
+            memory_peak_bytes: None,
+            lineage: None,
+            runtime_image: None,
+            isolation: crate::IsolationTier::LinuxNative,
+            credential_scope: None,
+            input_markings: Vec::new(),
+            output_markings: Vec::new(),
+            declassify: None,
+            key_ids: vec!["dek-1".into(), "kek-1".into()],
+            key_state: Some("ready".into()),
+        };
+        let json = to_json(&receipt).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["receipt_version"], 6);
+        assert_eq!(v["key_ids"], serde_json::json!(["dek-1", "kek-1"]));
+        assert_eq!(v["key_state"], "ready");
     }
 }

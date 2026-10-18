@@ -151,7 +151,18 @@ impl JobSource for LocalSource {
         let failure_path = self.output_dir.join("failure.txt");
         reject_symlink(&failure_path)?;
         fs::write(&failure_path, body)?;
-        let _ = fs::remove_file(self.output_dir.join("receipt.json"));
+        match failure {
+            Failure::KeyRevoked { dek_id, kek_id } => {
+                let receipt = revoked_receipt(job, dek_id, kek_id);
+                let json = receipt::to_json(&receipt).map_err(LocalError)?;
+                let receipt_path = self.output_dir.join("receipt.json");
+                reject_symlink(&receipt_path)?;
+                fs::write(&receipt_path, json)?;
+            }
+            _ => {
+                let _ = fs::remove_file(self.output_dir.join("receipt.json"));
+            }
+        }
         Ok(())
     }
 
@@ -163,6 +174,31 @@ impl JobSource for LocalSource {
         }
         self.job = Some(job.clone());
         Ok(())
+    }
+}
+
+fn revoked_receipt(job: &Job, dek_id: &str, kek_id: &str) -> Receipt {
+    Receipt {
+        job_id: job.id.clone(),
+        inputs: Vec::new(),
+        code: crate::digest::hash_bytes(job.code.as_bytes()),
+        engine_version: String::new(),
+        outputs: Vec::new(),
+        started_at: std::time::SystemTime::now(),
+        duration: std::time::Duration::from_millis(0),
+        tenant_id: job.tenant_id.clone(),
+        namespace: job.namespace.clone(),
+        cpu_usec: None,
+        memory_peak_bytes: None,
+        lineage: None,
+        runtime_image: None,
+        isolation: job.isolation,
+        credential_scope: None,
+        input_markings: Vec::new(),
+        output_markings: Vec::new(),
+        declassify: None,
+        key_ids: vec![dek_id.to_string(), kek_id.to_string()],
+        key_state: Some("revoked".into()),
     }
 }
 
@@ -406,6 +442,7 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
         isolation,
         output_markings,
         declassify,
+        encryption: None,
     })
 }
 
@@ -745,6 +782,7 @@ mod tests {
             isolation: IsolationTier::LinuxNative,
             output_markings: Default::default(),
             declassify: None,
+            encryption: None,
         };
         let outputs = vec![Output {
             name: "nested/out.csv".into(),
@@ -770,6 +808,8 @@ mod tests {
             input_markings: Vec::new(),
             output_markings: Vec::new(),
             declassify: None,
+            key_ids: Vec::new(),
+            key_state: None,
         };
         let err = source.complete(&job, &outputs, &receipt).unwrap_err();
         assert!(err.0.contains("file name"), "{err}");
@@ -995,6 +1035,8 @@ mod tests {
             input_markings: Vec::new(),
             output_markings: Vec::new(),
             declassify: None,
+            key_ids: Vec::new(),
+            key_state: None,
         };
         source.complete(&job, &outputs, &receipt).unwrap();
         let json = fs::read_to_string(out.join("receipt.json")).unwrap();

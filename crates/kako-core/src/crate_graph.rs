@@ -37,6 +37,10 @@ mod tests {
             !toml.contains("sekai-client") && !toml.contains("kako-source-sekai"),
             "kako-core must not depend on the Sekai adapter:\n{toml}"
         );
+        assert!(
+            !toml.contains("sekai-keys"),
+            "kako-core must not depend on sekai-keys:\n{toml}"
+        );
     }
 
     #[test]

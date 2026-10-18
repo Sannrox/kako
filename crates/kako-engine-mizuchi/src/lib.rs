@@ -559,6 +559,8 @@ mod tests {
             input_markings: Vec::new(),
             output_markings: Vec::new(),
             declassify: None,
+            key_ids: Vec::new(),
+            key_state: None,
         };
         let json = kako_core::receipt::to_json(&receipt).unwrap();
         let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -780,6 +782,7 @@ mod tests {
                 mizuchi::ParquetWriteOptions {
                     partition_by: &[String::from("year")],
                     mode: mizuchi_write_mode(WriteMode::Overwrite),
+                    encryption: None,
                 },
             )
             .unwrap();
@@ -901,6 +904,7 @@ mod tests {
             isolation: kako_core::IsolationTier::LinuxNative,
             output_markings: Default::default(),
             declassify: None,
+            encryption: None,
         };
         let error = kako_core::marking::refuse_under_marked(
             &job,
@@ -926,6 +930,7 @@ mod tests {
         let opts_over = mizuchi::ParquetWriteOptions {
             partition_by: &[String::from("year")],
             mode: mizuchi_write_mode(WriteMode::Overwrite),
+            encryption: None,
         };
         let first = session
             .write_parquet_reported(&dest, std::slice::from_ref(&batch), opts_over)
@@ -946,6 +951,7 @@ mod tests {
         let opts_append = mizuchi::ParquetWriteOptions {
             partition_by: &[String::from("year")],
             mode: mizuchi_write_mode(WriteMode::Append),
+            encryption: None,
         };
         let appended = session
             .write_parquet_reported(&dest, &[batch], opts_append)

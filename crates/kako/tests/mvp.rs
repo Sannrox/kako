@@ -94,7 +94,7 @@ fn cli_join_twice_same_output_digest() {
         assert!(csv.contains("25") || csv.contains("25.0"), "{csv}");
         let receipt = fs::read_to_string(out.join("receipt.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&receipt).unwrap();
-        assert_eq!(v["receipt_version"], 5);
+        assert_eq!(v["receipt_version"], 6);
         assert_eq!(v["isolation"], "linux_native");
         assert_eq!(v["job_id"], "join-agg");
         assert_eq!(v["input_markings"]["customers"], serde_json::json!([]));
@@ -273,6 +273,7 @@ fn timeout_kills_the_child_and_removes_scratch() {
     let config = RunnerConfig {
         worker: worker(),
         scratch_parent: scratch_parent.clone(),
+        keys: None,
     };
     let finishes = run_source(&mut source, &config).unwrap();
     match &finishes[0] {
@@ -310,6 +311,7 @@ fn job_error_removes_scratch() {
     let config = RunnerConfig {
         worker: worker(),
         scratch_parent: scratch_parent.clone(),
+        keys: None,
     };
     let finishes = run_source(&mut source, &config).unwrap();
     match &finishes[0] {
@@ -395,7 +397,7 @@ fn cli_copy_constant_row() {
     assert!(csv.contains('1'), "{csv}");
     let receipt = fs::read_to_string(out.join("receipt.json")).unwrap();
     let v: serde_json::Value = serde_json::from_str(&receipt).unwrap();
-    assert_eq!(v["receipt_version"], 5);
+    assert_eq!(v["receipt_version"], 6);
     assert_eq!(v["isolation"], "linux_native");
     assert_eq!(v["input_markings"]["in"], serde_json::json!([]));
     assert_eq!(v["output_markings"]["one.csv"], serde_json::json!([]));
@@ -447,6 +449,7 @@ fn successful_run_leaves_no_scratch() {
     let config = RunnerConfig {
         worker: worker(),
         scratch_parent: scratch_parent.clone(),
+        keys: None,
     };
     let finishes = run_source(&mut source, &config).unwrap();
     assert!(
@@ -757,6 +760,7 @@ fn python_oom_is_a_limit_and_leaves_the_runner_alive() {
     let config = RunnerConfig {
         worker: worker(),
         scratch_parent: scratch_parent.clone(),
+        keys: None,
     };
     let finishes = match run_source(&mut source, &config) {
         Ok(finishes) => finishes,
