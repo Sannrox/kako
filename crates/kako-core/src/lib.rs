@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime};
 
 #[cfg(test)]
 mod crate_graph;
+pub mod credential;
 pub mod digest;
 pub mod fair;
 pub mod governed;
@@ -185,6 +186,9 @@ pub struct Receipt {
     pub runtime_image: Option<String>,
     /// Isolation tier that actually ran.
     pub isolation: IsolationTier,
+    /// Id of the job-scoped credential the source used for remote inputs
+    /// and outputs. Never the secret. `None` for local files.
+    pub credential_scope: Option<String>,
 }
 
 /// Stable record of what one run read and wrote, for receipts.

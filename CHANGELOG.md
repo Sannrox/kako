@@ -6,7 +6,24 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Security
+
+- The sandboxed worker gets only the environment variables kako sets for it.
+  It no longer inherits the runner's environment, which user code could read
+  through `/proc/self/environ`.
+
+- Remote job sources mint one short-lived credential per claimed job, scoped
+  to that job's inputs and outputs. The runner process holds it, revokes it
+  when the claim ends, and refuses a broader or longer-lived credential
+  ([ADR 0013](docs/decisions/0013-job-scoped-credentials.md)). The Sekai
+  `ClaimTransport` gains `mint_credential` and `revoke_credential`, and
+  `write_outputs` takes the credential.
+
 ### Changed
+
+- Receipt JSON is `receipt_version` 4: optional `credential_scope` names the
+  job-scoped credential used for write-back, never its secret. Local file
+  jobs omit it.
 
 - Isolated-process jobs key quotas on the submitting transform owner from
   `TransformWork.tenant_id` when present, and keep the namespace key for

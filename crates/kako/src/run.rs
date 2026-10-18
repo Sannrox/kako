@@ -205,6 +205,7 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
         lineage,
         runtime_image: python_image.map(|image| image.id),
         isolation,
+        credential_scope: None,
     };
     Ok(CompletedRun {
         outputs,

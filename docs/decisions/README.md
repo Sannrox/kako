@@ -16,5 +16,6 @@ Decisions that must outlive a single PR.
 | [0010](0010-crate-graph.md) | Workspace crates follow runner subsystems | Accepted |
 | [0011](0011-runner-pool-drain.md) | Runner pool health, drain, and rollback | Accepted |
 | [0012](0012-governed-receipt-mapping.md) | kako receipts map onto the Sekai JobSpec and run receipt | Accepted |
+| [0013](0013-job-scoped-credentials.md) | Job-scoped credentials stay in the runner process | Accepted |
 
 Template: short context, decision, consequences, rejected alternatives.

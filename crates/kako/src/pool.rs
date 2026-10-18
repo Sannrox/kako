@@ -765,6 +765,7 @@ mod tests {
             lineage: None,
             runtime_image: None,
             isolation: job.isolation,
+            credential_scope: None,
         }
     }
 }

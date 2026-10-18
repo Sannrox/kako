@@ -670,6 +670,7 @@ mod tests {
             lineage: None,
             runtime_image: None,
             isolation: IsolationTier::LinuxNative,
+            credential_scope: None,
         };
         let err = source.complete(&job, &outputs, &receipt).unwrap_err();
         assert!(err.0.contains("file name"), "{err}");
@@ -891,6 +892,7 @@ mod tests {
             lineage: None,
             runtime_image: None,
             isolation: IsolationTier::LinuxNative,
+            credential_scope: None,
         };
         source.complete(&job, &outputs, &receipt).unwrap();
         let json = fs::read_to_string(out.join("receipt.json")).unwrap();
