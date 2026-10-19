@@ -101,6 +101,20 @@ produce them even if v1 does not serialize them yet.
 4. Switching the default is a new ADR once correctness, performance at
    scale factor 1, resource, lineage, and operational bars all pass.
 
+## Current results
+
+mizuchi against DuckDB, from [engine-bar/results.md](engine-bar/results.md):
+
+| Bar | SF1 | SF10 |
+| --- | --- | --- |
+| Correctness (completed queries match) | pass | pass |
+| Correctness (every query completes) | fail: `tpch_q1` aggregate cannot spill | fail: `tpch_q1`, `tpch_q3` |
+| Performance (geometric mean ≤ 2.0, no query > 5×) | fail: 4.65, worst 6.24 | fail: 11.91, worst 12.21 |
+| Resource (stays under the job cap or fails as a limit) | pass | fail: cgroup out-of-memory kill |
+| Engine-internal memory cap | not measured | not measured |
+
+The default engine stays DuckDB.
+
 ## Harness
 
 `scripts/engine-bar/run.sh` runs the fixture jobs through `kako run` and
@@ -108,6 +122,14 @@ prints one JSON object per job (`id`, `engine_version`, `duration_ms`,
 output digests). It needs kekkai `linux_native`. Without that backend the
 script exits 2; the same SQL is still covered by
 `engine::tests::engine_bar_join_matches_fixture` and the MVP join tests.
+
+`scripts/engine-bar/sf/run.sh <tiny|1|10> <dir>` is the scale-factor suite:
+it generates the decision-support tables, runs the fixed query set in
+`scripts/engine-bar/sf/queries/` on both engines under the same limits, and
+`report.py` scores the run against this page. The `Engine bar` workflow runs
+SF1 and SF10 weekly and on demand; it is not part of pull-request CI except
+when the harness changes. `engine_bar_sf` in the kako test suite runs the same
+SQL at the tiny scale in process.
 
 To capture a baseline:
 
