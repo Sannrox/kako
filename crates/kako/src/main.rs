@@ -9,6 +9,8 @@ kako: sandboxed data-transform runner
 
 USAGE:
     kako run <job.json> [--output <dir>] [--tenant <id>] [--namespace <ns>] [--require-identity]
+    kako validate <job.json>
+    kako preview <job.json> [--rows <n>]
     kako serve --listen <addr> [--hand-back] [--idle-ms <n>] [<job.json>] [--output <dir>] [--tenant <id>] [--namespace <ns>] [--require-identity]
     kako doctor
     kako [--version | --help]
@@ -18,6 +20,12 @@ outputs), runs it in a kekkai sandbox, and writes outputs plus receipt.json
 to the output directory (default: ./out). Jobs carry tenant_id and namespace
 (default local/default). --require-identity refuses a job file that omits
 either field. Python jobs set \"engine\": \"python\" and \"code\", and may pin \"runtime_image\".
+`kako validate` checks a SQL job file and runs the query in the
+sandbox over empty inputs typed as a full run types them, so unknown columns, join
+keys and type errors are reported with locations. `kako preview` runs a SQL
+job on at most --rows rows per input (default 100) and prints each output's
+columns and rows with a receipt marked non-committing. Both read inputs only
+through their named tables and write no output directory.
 `kako serve` exposes /health, /ready, and /version, claims an optional local
 job file, and drains on SIGTERM. Without a job file the process stays
 not-ready.";
@@ -55,6 +63,18 @@ fn main() {
         Some("doctor") => print!("{}", kako::sandbox::doctor_report()),
         Some("run") => {
             if let Err(error) = cmd_run(args) {
+                eprintln!("kako: {error}");
+                process::exit(1);
+            }
+        }
+        Some("validate") => {
+            if let Err(error) = cmd_validate(args) {
+                eprintln!("kako: {error}");
+                process::exit(1);
+            }
+        }
+        Some("preview") => {
+            if let Err(error) = cmd_preview(args) {
                 eprintln!("kako: {error}");
                 process::exit(1);
             }
@@ -118,6 +138,50 @@ fn cmd_run(args: impl Iterator<Item = String>) -> Result<(), String> {
             return Err(format!("{job_id}: {failure}"));
         }
     }
+    Ok(())
+}
+
+fn cmd_validate(mut args: impl Iterator<Item = String>) -> Result<(), String> {
+    let job_file = args.next().ok_or_else(|| "missing job file".to_string())?;
+    if let Some(extra) = args.next() {
+        return Err(format!("unexpected argument `{extra}`"));
+    }
+    let job = kako::local::load_job(Path::new(&job_file)).map_err(|error| error.to_string())?;
+    let config = kako::run::RunnerConfig::for_current_exe(std::env::temp_dir())
+        .map_err(|error| error.to_string())?;
+    kako::run::validate_job(&job, &config).map_err(|error| error.to_string())?;
+    println!("{job_file}: valid");
+    Ok(())
+}
+
+fn cmd_preview(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let mut job_file: Option<PathBuf> = None;
+    let mut rows = 100u64;
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--rows" => {
+                rows = args
+                    .next()
+                    .ok_or_else(|| "missing value for --rows".to_string())?
+                    .parse()
+                    .map_err(|error| format!("--rows: {error}"))?;
+            }
+            s if s.starts_with('-') => return Err(format!("unknown flag `{s}`")),
+            s => {
+                if job_file.is_some() {
+                    return Err("multiple job files".into());
+                }
+                job_file = Some(PathBuf::from(s));
+            }
+        }
+    }
+    let job_file = job_file.ok_or_else(|| "missing job file".to_string())?;
+    let job = kako::local::load_job(&job_file).map_err(|error| error.to_string())?;
+    let config = kako::run::RunnerConfig::for_current_exe(std::env::temp_dir())
+        .map_err(|error| error.to_string())?;
+    let preview = kako::run::preview_job(&job, &config, rows).map_err(|error| error.to_string())?;
+    println!("{}", preview.to_json()?);
     Ok(())
 }
 

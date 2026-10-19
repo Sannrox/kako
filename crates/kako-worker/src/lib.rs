@@ -12,12 +12,21 @@ mod ceiling;
 pub fn execute_in_scratch(scratch: &Path) -> Result<String, String> {
     let manifest = read_manifest(scratch)?;
     let write_mode = manifest.write_mode()?;
-    match manifest.engine.as_deref().unwrap_or("duckdb_sql") {
+    let engine = manifest.engine.as_deref().unwrap_or("duckdb_sql");
+    if manifest.sample_rows.is_some() && !matches!(engine, "duckdb_sql" | "sql") {
+        return Err(format!("preview supports duckdb_sql jobs, not `{engine}`"));
+    }
+    match engine {
         "duckdb_sql" | "sql" => {
             if write_mode != WriteMode::Overwrite {
                 return Err("write_mode is only valid for mizuchi jobs".into());
             }
-            kako_engine_duckdb::execute(&manifest.sql, &manifest.inputs, scratch)
+            let sample = manifest.sample_rows.map(|rows| kako_engine_duckdb::Sample {
+                rows,
+                capture: manifest.capture,
+                outputs: &manifest.outputs,
+            });
+            kako_engine_duckdb::execute_sampled(&manifest.sql, &manifest.inputs, scratch, sample)
         }
         "mizuchi" => {
             kako_engine_mizuchi::execute(&manifest.sql, &manifest.inputs, scratch, write_mode)
@@ -80,5 +89,18 @@ mod tests {
         let version = execute_in_scratch(scratch.path()).unwrap();
         assert!(version.starts_with("duckdb "), "{version}");
         assert!(scratch.outputs_dir().join("one.csv").is_file());
+    }
+
+    #[test]
+    fn preview_refuses_non_sql_engines() {
+        let parent = tempfile::tempdir().unwrap();
+        let scratch = Scratch::create(parent.path(), "preview-python").unwrap();
+        fs::write(
+            scratch.path().join("manifest.json"),
+            r#"{"engine":"python","sql":"print(1)","inputs":[],"sample_rows":5}"#,
+        )
+        .unwrap();
+        let error = execute_in_scratch(scratch.path()).unwrap_err();
+        assert!(error.contains("preview supports duckdb_sql"), "{error}");
     }
 }

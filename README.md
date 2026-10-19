@@ -44,6 +44,8 @@ kako doctor
 kako run job.json --output ./out
 kako run job.json --tenant local --namespace default
 kako run job.json --require-identity
+kako validate job.json
+kako preview job.json --rows 100
 kako serve --listen <addr>
 kako serve --listen <addr> job.json --output ./out
 kako serve --listen <addr> --hand-back
@@ -96,6 +98,23 @@ Every job, receipt, and quota key carries `tenant_id` and `namespace`. The
 local CLI fills `local` / `default` when the job file omits them, or the
 values from `--tenant` / `--namespace`. `--require-identity` is the
 multi-tenant mode: both fields must be present on the job file.
+
+`kako validate` parses a `duckdb_sql` job file and runs the SQL in the
+sandbox over empty inputs that keep the column types a full run infers.
+Unknown columns, bad join keys and type errors fail with the
+engine's message and `LINE` location before any run.
+
+`kako preview` runs a `duckdb_sql` job with each input loaded as a table of
+its first `--rows` rows (default 100, at most 10000) and prints JSON: each
+declared output's columns and rows as text, plus a receipt under
+`"committing": false`. Outputs are read as Parquet when they carry the
+Parquet magic bytes, otherwise as headered delimited text.
+
+In both commands SQL reads inputs only through their named tables; a direct
+scan of a staged file under `inputs/` is refused rather than read past the
+sample. Neither command writes an output directory or calls a job source,
+and the scratch tree is removed. Both refuse other engines and encrypted
+jobs, whose sealed outputs must not leave as plaintext rows.
 
 `kako serve` claims from the job source, serves `GET /health`, `GET /ready`,
 and `GET /version`, and drains on SIGTERM: readiness goes false immediately,
