@@ -91,6 +91,11 @@ Failures and limits:
 
 Every query both engines completed returned the same rows.
 
+Single runs vary: a rerun on the same runner class measured geometric means
+of 2.86 (SF1, worst 5.03) and 15.37 (SF10, worst 18.30), with the same
+verdict on every bar. Treat the ratios as an order of magnitude, not a
+precise figure.
+
 ## Verdict
 
 mizuchi does not meet the bar at SF1 or SF10. Correctness fails at both
