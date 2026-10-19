@@ -34,6 +34,8 @@ pub enum SekaiSourceError {
     FenceLost,
     Heartbeat(String),
     Transport(String),
+    /// Plane accepted the RPC but quarantined the result. The claim is over.
+    Quarantined(String),
 }
 
 impl std::fmt::Display for SekaiSourceError {
@@ -42,6 +44,7 @@ impl std::fmt::Display for SekaiSourceError {
             Self::FenceLost => formatter.write_str("claim fence was lost"),
             Self::Heartbeat(message) => write!(formatter, "heartbeat: {message}"),
             Self::Transport(message) => write!(formatter, "sekai source: {message}"),
+            Self::Quarantined(message) => write!(formatter, "write-back quarantined: {message}"),
         }
     }
 }
@@ -218,7 +221,7 @@ impl<T: ClaimTransport> JobSource for SekaiSource<T> {
         let result = self
             .transport
             .write_outputs(&held.fence, &held.credential, outputs, &receipt);
-        if result.is_ok() || matches!(result, Err(SekaiSourceError::FenceLost)) {
+        if result.is_ok() || result.as_ref().is_err_and(is_terminal_claim_error) {
             return self.end_claim(result);
         }
         result
@@ -230,7 +233,7 @@ impl<T: ClaimTransport> JobSource for SekaiSource<T> {
             return self.end_claim(Err(error));
         }
         let result = self.transport.report_failure(&held.fence, failure);
-        if result.is_ok() || matches!(result, Err(SekaiSourceError::FenceLost)) {
+        if result.is_ok() || result.as_ref().is_err_and(is_terminal_claim_error) {
             return self.end_claim(result);
         }
         result
@@ -239,11 +242,18 @@ impl<T: ClaimTransport> JobSource for SekaiSource<T> {
     fn release(&mut self, job: &Job) -> Result<(), Self::Error> {
         let held = self.require_held(job)?;
         let result = self.transport.release(&held.fence);
-        if result.is_ok() || matches!(result, Err(SekaiSourceError::FenceLost)) {
+        if result.is_ok() || result.as_ref().is_err_and(is_terminal_claim_error) {
             return self.end_claim(result);
         }
         result
     }
+}
+
+fn is_terminal_claim_error(error: &SekaiSourceError) -> bool {
+    matches!(
+        error,
+        SekaiSourceError::FenceLost | SekaiSourceError::Quarantined(_)
+    )
 }
 
 /// In-memory claim transport for adapter tests.
@@ -253,6 +263,7 @@ pub struct FakeClaimTransport {
     held_work: Option<ClaimedWork>,
     fence_lost: bool,
     fence_lost_on_write: bool,
+    quarantine_on_write: bool,
     heartbeat_error: Option<String>,
     report_error: Option<String>,
     broaden_credential: bool,
@@ -278,6 +289,10 @@ impl FakeClaimTransport {
 
     pub fn lose_fence_on_write(&mut self) {
         self.fence_lost_on_write = true;
+    }
+
+    pub fn quarantine_on_write(&mut self) {
+        self.quarantine_on_write = true;
     }
 
     pub fn fail_heartbeat(&mut self, message: impl Into<String>) {
@@ -386,6 +401,9 @@ impl ClaimTransport for FakeClaimTransport {
         if self.fence_lost || self.fence_lost_on_write {
             return Err(SekaiSourceError::FenceLost);
         }
+        if self.quarantine_on_write {
+            return Err(SekaiSourceError::Quarantined("quality failed".into()));
+        }
         if !self.live_credentials.contains(credential) {
             return Err(SekaiSourceError::Transport(
                 "write-back credential is not live".into(),
@@ -476,6 +494,8 @@ pub fn sample_claimed_job(scratch: &Path, runtime_id: &str) -> (Job, Fence) {
 
 #[cfg(feature = "sekai-client")]
 pub mod live;
+#[cfg(feature = "sekai-client")]
+pub use live::LiveClaimTransport;
 
 #[cfg(test)]
 mod tests {
@@ -528,6 +548,34 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(error, SekaiSourceError::FenceLost);
+        let transport = source.into_transport();
+        assert!(transport.writes().is_empty());
+        assert!(transport.live_credentials().is_empty());
+    }
+
+    #[test]
+    fn quarantined_write_back_ends_the_held_claim() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (job, fence) = sample_claimed_job(scratch.path(), "runner-a");
+        let mut transport = FakeClaimTransport::with_job(job.clone(), fence);
+        transport.quarantine_on_write();
+        let mut source = SekaiSource::new(transport, "runner-a");
+        let claimed = source.next_job().unwrap().expect("claimed");
+        let error = source
+            .complete(
+                &claimed,
+                &[Output {
+                    name: "out".into(),
+                    path: scratch.path().join("out.csv"),
+                    digest: Digest("sha256:out".into()),
+                }],
+                &receipt(&claimed),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, SekaiSourceError::Quarantined(message) if message.contains("quality failed"))
+        );
+        assert!(source.next_job().unwrap().is_none());
         let transport = source.into_transport();
         assert!(transport.writes().is_empty());
         assert!(transport.live_credentials().is_empty());
