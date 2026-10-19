@@ -1,27 +1,46 @@
 //! Maps the published runtime-claim client onto this adapter.
 //!
-//! Connecting to a live plane is kako#35. This module translates fence loss,
-//! stages claim-scoped input snapshots, and maps kako receipts onto the
-//! fenced write-back payload so a live client cannot report a lost fence as
-//! a successful complete.
+//! `LiveClaimTransport` claims isolated-process work from a local plane,
+//! pages claim-scoped input snapshots to exhaustion (renewing the claim
+//! lease after each non-empty page), and maps kako receipts onto the
+//! fenced write-back payload so a live client cannot report a lost fence
+//! as a successful complete. Isolated-process JobSpec does not carry
+//! program bytes (ADR 0012); live claims honor proto `sql` when a later
+//! revision fills it, else `KAKO_SEKAI_CODE`. Plane credentials stay on the
+//! fence; kako's job-scoped credential is minted in-process and refused
+//! after expiry. The live lease uses the plane's 300s cap because
+//! JobSource has no execute-time heartbeat.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
+use futures_util::StreamExt;
+use kako_core::credential::{CredentialScope, JobCredential, Secret, ttl_for};
 use kako_core::{Engine, Failure, Input, IsolationTier, Job, Output, Receipt, WriteMode};
 use sekai_client::claim::{
-    RuntimeClaimError, TransformFence, TransformWrite, transform_quota_tenant_id,
+    ClaimAttempt, RuntimeClaimError, TransformFence, TransformWrite, transform_quota_tenant_id,
 };
-use sekai_client::protocol::sekai::{GovernedTransform, TransformRunInputRow, TransformWork};
+use sekai_client::protocol::sekai::{
+    GovernedTransform, TransformRunInputRow, TransformWork, WriteTransformRunResultResponse,
+};
+use sekai_client::{ClientConfig, CoreLoopClient, GrpcTransport};
 use sha2::{Digest as Sha256Digest, Sha256};
 
-use crate::{Fence, SekaiSourceError};
+use crate::{ClaimTransport, ClaimedWork, Fence, SekaiSourceError};
 
 const ISOLATED_CLASS: &str = "isolated_process";
 const DEFAULT_WALL_CLOCK: Duration = Duration::from_secs(30);
+/// Plane `normalize_transform_claim_ttl_ms` cap. JobSource heartbeats only
+/// at complete/fail, so the live claim lease must cover staging plus the
+/// worker without a mid-run hook.
+const PLANE_MAX_CLAIM_TTL: Duration = Duration::from_secs(300);
+/// Time reserved after worker wall-clock for staging already spent and
+/// for copy/hash/write-back before the completion heartbeat.
+const LIVE_LEASE_RESERVE: Duration = Duration::from_secs(30);
+const INPUT_PAGE: i32 = 256;
 const OUTPUT_DIGEST_PREFIX: &str = "sha256-sum-v1:";
 const HEX: &[u8; 16] = b"0123456789abcdef";
 const MAX_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
@@ -61,21 +80,22 @@ pub fn job_from_claimed(
     transform: &GovernedTransform,
     inputs: Vec<Input>,
 ) -> Result<Job, SekaiSourceError> {
+    job_from_claimed_with_program(work, transform, inputs, None)
+}
+
+fn job_from_claimed_with_program(
+    work: &TransformWork,
+    transform: &GovernedTransform,
+    inputs: Vec<Input>,
+    program: Option<&str>,
+) -> Result<Job, SekaiSourceError> {
     let profile = transform.profile.trim();
     if !profile.is_empty() && profile != ISOLATED_CLASS {
         return Err(SekaiSourceError::Transport(format!(
             "transform profile {profile} is not isolated_process"
         )));
     }
-    // Isolated-process proto `sql` is analytical-only and empty on the pinned
-    // claim client. If a later revision carries code there, honor it; otherwise
-    // fail closed rather than inventing a program.
-    let code = transform.sql.trim();
-    if code.is_empty() {
-        return Err(SekaiSourceError::Transport(
-            "isolated-process claim does not include executable code".into(),
-        ));
-    }
+    let code = isolated_program(transform, program)?;
     let namespace = if work.namespace.is_empty() {
         transform.namespace.clone()
     } else {
@@ -103,7 +123,7 @@ pub fn job_from_claimed(
     Ok(Job {
         id: work.run_id.clone(),
         engine,
-        code: code.to_string(),
+        code,
         inputs,
         outputs,
         write_mode: WriteMode::Overwrite,
@@ -125,6 +145,10 @@ pub fn job_from_claimed(
 }
 
 /// Write claim-scoped snapshot rows into scratch as one CSV per alias.
+///
+/// Declared inputs with zero snapshot rows are omitted: the pinned claim
+/// proto has no column schema, and a headerless empty CSV cannot register
+/// as a table. Live tests require populated datasets.
 pub fn stage_input_rows(
     scratch: &Path,
     rows: &[TransformRunInputRow],
@@ -134,15 +158,10 @@ pub fn stage_input_rows(
             "input snapshot exceeds row write-back budget".into(),
         ));
     }
-    let mut cells = 0usize;
+    let mut budget = SnapshotBudget::default();
     let mut grouped: BTreeMap<String, Vec<&TransformRunInputRow>> = BTreeMap::new();
     for row in rows {
-        cells = cells.saturating_add(row.values.len().max(1));
-        if cells > MAX_OUTPUT_CELLS {
-            return Err(SekaiSourceError::Transport(
-                "input snapshot exceeds cell write-back budget".into(),
-            ));
-        }
+        budget.account(row)?;
         let alias = if row.alias.trim().is_empty() {
             row.dataset_id.trim()
         } else {
@@ -170,6 +189,11 @@ pub fn stage_input_rows(
 }
 
 /// Map kako outputs and receipt onto the fenced write-back payload.
+///
+/// The digest is the unpartitioned `sha256-sum-v1` envelope. The pinned
+/// claim proto does not carry output dataset partition keys; the plane
+/// loads those at write-back. Partitioned targets are out of scope for
+/// this live slice: #35's tests use unpartitioned join+agg.
 pub fn transform_write_from_complete(
     outputs: &[Output],
     _receipt: &Receipt,
@@ -193,6 +217,405 @@ pub fn transform_write_from_failure(failure: &Failure) -> TransformWrite {
         quality_rule: failure.to_string(),
         partitions: Vec::new(),
     }
+}
+
+/// Runtime-claim client over a live plane. Sync `ClaimTransport` methods
+/// drive the async client on a private current-thread runtime.
+pub struct LiveClaimTransport {
+    client: CoreLoopClient<GrpcTransport>,
+    runtime: tokio::runtime::Runtime,
+    scratch: PathBuf,
+    ttl: Duration,
+    /// Isolated-process JobSpec omits SQL/Python (ADR 0012). Used when proto
+    /// `sql` is empty. Set from `KAKO_SEKAI_CODE` for live claims.
+    program: Option<String>,
+    live_credentials: Vec<JobCredential>,
+    last_receipt: Option<Receipt>,
+    staged_runs: Vec<String>,
+}
+
+impl LiveClaimTransport {
+    pub fn connect(config: ClientConfig, scratch: PathBuf) -> Result<Self, SekaiSourceError> {
+        fs::create_dir_all(&scratch).map_err(|error| {
+            SekaiSourceError::Transport(format!("create live scratch: {error}"))
+        })?;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| SekaiSourceError::Transport(error.to_string()))?;
+        let client = runtime
+            .block_on(CoreLoopClient::connect(config))
+            .map_err(|error| SekaiSourceError::Transport(error.to_string()))?;
+        Ok(Self {
+            client,
+            runtime,
+            scratch,
+            ttl: PLANE_MAX_CLAIM_TTL,
+            program: None,
+            live_credentials: Vec::new(),
+            last_receipt: None,
+            staged_runs: Vec::new(),
+        })
+    }
+
+    /// `KAKO_SEKAI_TARGET` and `KAKO_SEKAI_NAMESPACE` are required.
+    /// `KAKO_SEKAI_PRINCIPAL` defaults to `kako-live`. `KAKO_SEKAI_TOKEN`
+    /// is optional. `KAKO_SEKAI_ALLOW_INSECURE=1` allows a non-TLS target.
+    /// `KAKO_SEKAI_CODE` supplies the isolated-process program when the
+    /// pinned claim proto leaves `sql` empty.
+    pub fn connect_from_env(scratch: PathBuf) -> Result<Self, SekaiSourceError> {
+        let target = std::env::var("KAKO_SEKAI_TARGET").map_err(|_| {
+            SekaiSourceError::Transport(
+                "KAKO_SEKAI_TARGET is required (local Sekai grpc target)".into(),
+            )
+        })?;
+        let namespace = std::env::var("KAKO_SEKAI_NAMESPACE")
+            .map_err(|_| SekaiSourceError::Transport("KAKO_SEKAI_NAMESPACE is required".into()))?;
+        let principal =
+            std::env::var("KAKO_SEKAI_PRINCIPAL").unwrap_or_else(|_| "kako-live".into());
+        let mut config = ClientConfig::new(target, principal).with_namespace(namespace);
+        if let Ok(token) = std::env::var("KAKO_SEKAI_TOKEN")
+            && !token.trim().is_empty()
+        {
+            config = config
+                .with_token(token)
+                .map_err(|error| SekaiSourceError::Transport(error.to_string()))?;
+        }
+        if std::env::var("KAKO_SEKAI_ALLOW_INSECURE").ok().as_deref() == Some("1") {
+            config = config.allow_insecure_remote(true);
+        }
+        let mut live = Self::connect(config, scratch)?;
+        live.program = std::env::var("KAKO_SEKAI_CODE")
+            .ok()
+            .map(|code| code.trim().to_string())
+            .filter(|code| !code.is_empty());
+        Ok(live)
+    }
+
+    /// Receipt from the last successful fenced write-back.
+    pub fn last_receipt(&self) -> Option<&Receipt> {
+        self.last_receipt.as_ref()
+    }
+
+    fn read_all_rows(
+        &mut self,
+        fence: &TransformFence,
+    ) -> Result<Vec<TransformRunInputRow>, SekaiSourceError> {
+        let mut budget = SnapshotBudget::default();
+        collect_input_pages(|after_alias, after_row_id| {
+            let mut stream = self
+                .runtime
+                .block_on(self.client.runtime_claim().read_transform_inputs(
+                    fence,
+                    "",
+                    after_alias,
+                    after_row_id,
+                    INPUT_PAGE,
+                ))
+                .map_err(map_claim_error)?;
+            let mut page = Vec::new();
+            loop {
+                match self.runtime.block_on(stream.next()) {
+                    None => break,
+                    Some(Ok(item)) => {
+                        if let Some(row) = item.row {
+                            push_snapshot_row(&mut page, &mut budget, row)?;
+                        }
+                    }
+                    Some(Err(error)) => return Err(map_claim_error(error)),
+                }
+            }
+            // A snapshot near the row budget is thousands of RPCs. Renew
+            // after each non-empty page so paging cannot outrun the 300s
+            // claim lease before the post-staging heartbeat.
+            renew_after_non_empty_page(&page, || {
+                self.runtime
+                    .block_on(
+                        self.client
+                            .runtime_claim()
+                            .heartbeat_transform(fence, self.ttl),
+                    )
+                    .map(|_| ())
+                    .map_err(map_claim_error)
+            })?;
+            Ok(page)
+        })
+    }
+
+    fn claim_listed(
+        &mut self,
+        runtime_id: &str,
+        listed_work: TransformWork,
+    ) -> Result<Option<ClaimedWork>, SekaiSourceError> {
+        let claimed = self
+            .runtime
+            .block_on(self.client.runtime_claim().claim_transform_work(
+                runtime_id,
+                listed_work.run_id.clone(),
+                self.ttl,
+            ))
+            .map_err(map_claim_error)?;
+        let ClaimAttempt::Claimed(response) = claimed else {
+            return Ok(None);
+        };
+        let Some(work) = response.work else {
+            return Err(SekaiSourceError::Transport(
+                "claimed transform work is empty".into(),
+            ));
+        };
+        let fence = fence_from_transform(&TransformFence::from_work(&work, runtime_id));
+        let Some(transform) = response.transform else {
+            return Err(self.abandon_claimed(
+                &fence,
+                SekaiSourceError::Transport("claimed transform definition is empty".into()),
+            ));
+        };
+        let rows = match self.read_all_rows(&transform_fence(&fence)) {
+            Ok(rows) => rows,
+            Err(error) => return Err(self.abandon_claimed(&fence, error)),
+        };
+        let scratch = self.scratch.join(&fence.run_id);
+        if let Err(error) = fs::create_dir_all(&scratch) {
+            return Err(self.abandon_claimed(
+                &fence,
+                SekaiSourceError::Transport(format!("create claim scratch: {error}")),
+            ));
+        }
+        let program = self.program.clone();
+        let ttl = self.ttl;
+        let prepared = stage_input_rows(&scratch, &rows).and_then(|inputs| {
+            let job = job_from_claimed_with_program(&work, &transform, inputs, program.as_deref())?;
+            require_live_lease(&job, ttl)?;
+            Ok(job)
+        });
+        let job = match prepared {
+            Ok(job) => job,
+            Err(error) => return Err(self.abandon_claimed(&fence, error)),
+        };
+        // Staging spent part of the lease; refresh to the plane cap before
+        // the sync worker runs (JobSource has no execute-time heartbeat).
+        if let Err(error) = self.heartbeat(&fence) {
+            return Err(self.abandon_claimed(&fence, error));
+        }
+        self.staged_runs.push(fence.run_id.clone());
+        Ok(Some(ClaimedWork { fence, job }))
+    }
+
+    /// Terminal preparation errors write a runner failure under the fence so
+    /// the plane does not keep handing back the same unexecutable work.
+    /// Fence loss and heartbeat errors skip write-back; the lease expires.
+    fn abandon_claimed(&mut self, fence: &Fence, error: SekaiSourceError) -> SekaiSourceError {
+        remove_claim_scratch(&self.scratch, &fence.run_id);
+        if let Some(write) = prep_failure_write(&error) {
+            let _ = self.runtime.block_on(
+                self.client
+                    .runtime_claim()
+                    .write_transform_result(&transform_fence(fence), write),
+            );
+        }
+        error
+    }
+
+    fn drop_claim_scratch(&mut self, fence: &Fence) {
+        remove_claim_scratch(&self.scratch, &fence.run_id);
+        self.staged_runs.retain(|id| id != &fence.run_id);
+    }
+}
+
+impl ClaimTransport for LiveClaimTransport {
+    fn claim_next(&mut self, runtime_id: &str) -> Result<Option<ClaimedWork>, SekaiSourceError> {
+        let listed = self
+            .runtime
+            .block_on(
+                self.client
+                    .runtime_claim()
+                    .list_transform_work(runtime_id, 8),
+            )
+            .map_err(map_claim_error)?;
+        for listed_work in listed {
+            match self.claim_listed(runtime_id, listed_work)? {
+                Some(claimed) => return Ok(Some(claimed)),
+                None => continue,
+            }
+        }
+        Ok(None)
+    }
+
+    fn heartbeat(&mut self, fence: &Fence) -> Result<(), SekaiSourceError> {
+        self.runtime
+            .block_on(
+                self.client
+                    .runtime_claim()
+                    .heartbeat_transform(&transform_fence(fence), self.ttl),
+            )
+            .map(|_| ())
+            .map_err(map_claim_error)
+    }
+
+    fn mint_credential(
+        &mut self,
+        fence: &Fence,
+        job: &Job,
+        ttl: Duration,
+    ) -> Result<JobCredential, SekaiSourceError> {
+        let id = format!("cred-{}-{}", fence.run_id, fence.generation);
+        let credential = JobCredential {
+            scope: CredentialScope::for_job(id.as_str(), job),
+            secret: Secret::new(format!("job-secret-{id}")),
+            expires_at: std::time::SystemTime::now() + ttl.min(ttl_for(job)),
+        };
+        self.live_credentials.push(credential.clone());
+        Ok(credential)
+    }
+
+    fn revoke_credential(&mut self, credential: &JobCredential) -> Result<(), SekaiSourceError> {
+        self.live_credentials
+            .retain(|live| live.scope.id != credential.scope.id);
+        Ok(())
+    }
+
+    fn write_outputs(
+        &mut self,
+        fence: &Fence,
+        credential: &JobCredential,
+        outputs: &[Output],
+        receipt: &Receipt,
+    ) -> Result<(), SekaiSourceError> {
+        require_live_credential(&self.live_credentials, credential, SystemTime::now())?;
+        let write = transform_write_from_complete(outputs, receipt)?;
+        let result = self
+            .runtime
+            .block_on(
+                self.client
+                    .runtime_claim()
+                    .write_transform_result(&transform_fence(fence), write),
+            )
+            .map_err(map_claim_error);
+        self.drop_claim_scratch(fence);
+        require_committed_write(&result?)?;
+        self.last_receipt = Some(receipt.clone());
+        Ok(())
+    }
+
+    fn report_failure(&mut self, fence: &Fence, failure: &Failure) -> Result<(), SekaiSourceError> {
+        let write = transform_write_from_failure(failure);
+        let result = self
+            .runtime
+            .block_on(
+                self.client
+                    .runtime_claim()
+                    .write_transform_result(&transform_fence(fence), write),
+            )
+            .map(|_| ())
+            .map_err(map_claim_error);
+        self.drop_claim_scratch(fence);
+        result
+    }
+}
+
+impl Drop for LiveClaimTransport {
+    fn drop(&mut self) {
+        for run_id in self.staged_runs.drain(..) {
+            remove_claim_scratch(&self.scratch, &run_id);
+        }
+    }
+}
+
+fn renew_after_non_empty_page(
+    page: &[TransformRunInputRow],
+    renew: impl FnOnce() -> Result<(), SekaiSourceError>,
+) -> Result<(), SekaiSourceError> {
+    if !page.is_empty() {
+        renew()?;
+    }
+    Ok(())
+}
+
+fn require_live_credential<'a>(
+    live: &'a [JobCredential],
+    credential: &JobCredential,
+    now: SystemTime,
+) -> Result<&'a JobCredential, SekaiSourceError> {
+    let found = live
+        .iter()
+        .find(|item| item.scope.id == credential.scope.id)
+        .ok_or_else(|| SekaiSourceError::Transport("write-back credential is not live".into()))?;
+    if found.expires_at <= now {
+        return Err(SekaiSourceError::Transport(
+            "write-back credential has expired".into(),
+        ));
+    }
+    Ok(found)
+}
+
+fn require_live_lease(job: &Job, lease: Duration) -> Result<(), SekaiSourceError> {
+    let budget = lease.saturating_sub(LIVE_LEASE_RESERVE);
+    if job.wall_clock > budget {
+        return Err(SekaiSourceError::Transport(format!(
+            "isolated-process wall-clock {}s exceeds the {}s live execution budget ({}s lease minus {}s reserve)",
+            job.wall_clock.as_secs(),
+            budget.as_secs(),
+            lease.as_secs(),
+            LIVE_LEASE_RESERVE.as_secs()
+        )));
+    }
+    Ok(())
+}
+
+fn remove_claim_scratch(scratch: &Path, run_id: &str) {
+    let path = scratch.join(run_id);
+    let _ = fs::remove_dir_all(path);
+}
+
+/// Isolated-process JobSpec does not hash SQL/Python (ADR 0012). Proto
+/// `sql` is analytical-only on the pinned client. Honor it when present;
+/// otherwise use the live-transport fallback (`KAKO_SEKAI_CODE`). Never
+/// invent a program.
+fn isolated_program(
+    transform: &GovernedTransform,
+    fallback: Option<&str>,
+) -> Result<String, SekaiSourceError> {
+    let sql = transform.sql.trim();
+    if !sql.is_empty() {
+        return Ok(sql.to_string());
+    }
+    match fallback.map(str::trim).filter(|code| !code.is_empty()) {
+        Some(code) => Ok(code.to_string()),
+        None => Err(SekaiSourceError::Transport(
+            "isolated-process claim does not include executable code".into(),
+        )),
+    }
+}
+
+/// Drain claim-scoped input pages until the plane returns an empty page.
+/// Each RPC is one page of at most `INPUT_PAGE` rows; the next call must
+/// pass the last row's alias and row_id.
+fn collect_input_pages(
+    mut fetch_page: impl FnMut(&str, i64) -> Result<Vec<TransformRunInputRow>, SekaiSourceError>,
+) -> Result<Vec<TransformRunInputRow>, SekaiSourceError> {
+    let mut after_alias = String::new();
+    let mut after_row_id = 0i64;
+    let mut rows = Vec::new();
+    let mut budget = SnapshotBudget::default();
+    loop {
+        let page = fetch_page(&after_alias, after_row_id)?;
+        if page.is_empty() {
+            break;
+        }
+        for row in &page {
+            budget.account(row)?;
+        }
+        let last = page.last().expect("non-empty page");
+        if last.alias == after_alias && last.row_id == after_row_id {
+            return Err(SekaiSourceError::Transport(
+                "input snapshot page did not advance the read cursor".into(),
+            ));
+        }
+        after_alias = last.alias.clone();
+        after_row_id = last.row_id;
+        rows.extend(page);
+    }
+    Ok(rows)
 }
 
 fn engine_from_name(name: &str) -> Result<Engine, SekaiSourceError> {
@@ -339,6 +762,93 @@ fn write_csv(path: &Path, rows: &[&TransformRunInputRow]) -> Result<(), SekaiSou
         writeln!(file, "{line}").map_err(stage_io)?;
     }
     Ok(())
+}
+
+#[derive(Default)]
+struct SnapshotBudget {
+    rows: usize,
+    cells: usize,
+    bytes: u64,
+}
+
+impl SnapshotBudget {
+    fn account(&mut self, row: &TransformRunInputRow) -> Result<(), SekaiSourceError> {
+        if self.rows.saturating_add(1) > MAX_OUTPUT_ROWS {
+            return Err(SekaiSourceError::Transport(
+                "input snapshot exceeds row write-back budget".into(),
+            ));
+        }
+        let cells = self.cells.saturating_add(row.values.len().max(1));
+        if cells > MAX_OUTPUT_CELLS {
+            return Err(SekaiSourceError::Transport(
+                "input snapshot exceeds cell write-back budget".into(),
+            ));
+        }
+        let bytes = account_snapshot_bytes(self.bytes, snapshot_row_bytes(row))?;
+        self.rows += 1;
+        self.cells = cells;
+        self.bytes = bytes;
+        Ok(())
+    }
+}
+
+fn push_snapshot_row(
+    page: &mut Vec<TransformRunInputRow>,
+    budget: &mut SnapshotBudget,
+    row: TransformRunInputRow,
+) -> Result<(), SekaiSourceError> {
+    budget.account(&row)?;
+    page.push(row);
+    Ok(())
+}
+
+fn require_committed_write(
+    response: &WriteTransformRunResultResponse,
+) -> Result<(), SekaiSourceError> {
+    match response.run.as_ref() {
+        Some(run) if run.quarantined => Err(SekaiSourceError::Quarantined(
+            if run.quality_rule.is_empty() {
+                "plane quarantined the write-back".into()
+            } else {
+                format!("plane quarantined the write-back: {}", run.quality_rule)
+            },
+        )),
+        Some(_) => Ok(()),
+        None => Err(SekaiSourceError::Transport(
+            "write-back response has no transform run".into(),
+        )),
+    }
+}
+
+fn prep_failure_write(error: &SekaiSourceError) -> Option<TransformWrite> {
+    match error {
+        SekaiSourceError::FenceLost | SekaiSourceError::Heartbeat(_) => None,
+        other => Some(transform_write_from_failure(&Failure::Runner(
+            other.to_string(),
+        ))),
+    }
+}
+
+fn snapshot_row_bytes(row: &TransformRunInputRow) -> u64 {
+    let mut n = (row.alias.len() as u64)
+        .saturating_add(row.dataset_id.len() as u64)
+        .saturating_add(row.partition_key.len() as u64);
+    for (key, value) in &row.values {
+        n = n
+            .saturating_add(key.len() as u64)
+            .saturating_add(value.len() as u64);
+    }
+    n
+}
+
+fn account_snapshot_bytes(used: u64, add: u64) -> Result<u64, SekaiSourceError> {
+    let total = used.saturating_add(add);
+    if total > MAX_OUTPUT_BYTES {
+        return Err(SekaiSourceError::Transport(
+            "input snapshot exceeds byte write-back budget".into(),
+        ));
+    }
+    Ok(total)
 }
 
 fn account_csv_bytes(written: u64, line_len: usize) -> Result<u64, SekaiSourceError> {
@@ -605,6 +1115,7 @@ mod tests {
     use kako_core::Digest;
     use sekai_client::SdkError;
     use sekai_client::SdkErrorCode;
+    use sekai_client::protocol::sekai::TransformRun;
     use std::time::SystemTime;
 
     fn transform(engine: &str, sql: &str) -> GovernedTransform {
@@ -746,6 +1257,282 @@ mod tests {
         let error = job_from_claimed(&work(), &transform("python", ""), Vec::new()).unwrap_err();
         assert!(
             matches!(error, SekaiSourceError::Transport(message) if message.contains("does not include executable code"))
+        );
+    }
+
+    #[test]
+    fn live_program_fallback_supplies_isolated_code() {
+        let job = job_from_claimed_with_program(
+            &work(),
+            &transform("mizuchi", ""),
+            Vec::new(),
+            Some("SELECT 1 AS n"),
+        )
+        .expect("fallback program");
+        assert_eq!(job.code, "SELECT 1 AS n");
+        assert_eq!(job.engine, Engine::Mizuchi);
+    }
+
+    #[test]
+    fn claimed_sql_wins_over_live_program_fallback() {
+        let job = job_from_claimed_with_program(
+            &work(),
+            &transform("duckdb", "SELECT 2 AS n"),
+            Vec::new(),
+            Some("SELECT 1 AS n"),
+        )
+        .expect("claimed sql");
+        assert_eq!(job.code, "SELECT 2 AS n");
+    }
+
+    fn input_row(alias: &str, row_id: i64) -> TransformRunInputRow {
+        TransformRunInputRow {
+            alias: alias.into(),
+            dataset_id: alias.into(),
+            row_id,
+            values: [("id".into(), row_id.to_string())].into_iter().collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn input_pages_concatenate_until_empty() {
+        let mut calls = 0u8;
+        let rows = collect_input_pages(|after_alias, after_row_id| {
+            calls += 1;
+            Ok(match (after_alias, after_row_id, calls) {
+                ("", 0, 1) => vec![input_row("orders", 1), input_row("orders", 2)],
+                ("orders", 2, 2) => vec![input_row("customers", 1)],
+                ("customers", 1, 3) => Vec::new(),
+                other => panic!("unexpected page cursor {other:?}"),
+            })
+        })
+        .expect("paged");
+        assert_eq!(calls, 3);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].alias, "orders");
+        assert_eq!(rows[2].alias, "customers");
+    }
+
+    #[test]
+    fn input_pages_stop_on_empty_first_page() {
+        let rows = collect_input_pages(|_, _| Ok(Vec::new())).expect("empty");
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn stuck_input_cursor_fails_closed() {
+        let error = collect_input_pages(|_, _| Ok(vec![input_row("", 0)])).unwrap_err();
+        assert!(
+            matches!(error, SekaiSourceError::Transport(message) if message.contains("did not advance"))
+        );
+    }
+
+    #[test]
+    fn live_lease_rejects_wall_clock_beyond_plane_cap() {
+        let mut claimed = transform("mizuchi", "SELECT 1");
+        claimed.time_limit_ms = 301_000;
+        let job = job_from_claimed(&work(), &claimed, Vec::new()).expect("mapped");
+        let error = require_live_lease(&job, PLANE_MAX_CLAIM_TTL).unwrap_err();
+        assert!(
+            matches!(error, SekaiSourceError::Transport(message) if message.contains("live execution budget"))
+        );
+        let mut at_budget = transform("mizuchi", "SELECT 1");
+        at_budget.time_limit_ms = 270_000;
+        let job = job_from_claimed(&work(), &at_budget, Vec::new()).expect("mapped");
+        require_live_lease(&job, PLANE_MAX_CLAIM_TTL).expect("within reserve");
+        let mut over_budget = transform("mizuchi", "SELECT 1");
+        over_budget.time_limit_ms = 271_000;
+        let job = job_from_claimed(&work(), &over_budget, Vec::new()).expect("mapped");
+        require_live_lease(&job, PLANE_MAX_CLAIM_TTL).unwrap_err();
+    }
+
+    fn live_credential(id: &str, expires_at: SystemTime) -> JobCredential {
+        JobCredential {
+            scope: CredentialScope {
+                id: id.into(),
+                job_id: "run-1".into(),
+                read: Vec::new(),
+                write: Vec::new(),
+                read_markings: Vec::new(),
+            },
+            secret: Secret::new("s"),
+            expires_at,
+        }
+    }
+
+    #[test]
+    fn non_empty_input_page_renews_the_live_lease() {
+        let mut renewed = false;
+        renew_after_non_empty_page(&[input_row("orders", 1)], || {
+            renewed = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(renewed);
+    }
+
+    #[test]
+    fn empty_input_page_does_not_renew_the_live_lease() {
+        let mut renewed = false;
+        renew_after_non_empty_page(&[], || {
+            renewed = true;
+            Ok(())
+        })
+        .unwrap();
+        assert!(!renewed);
+    }
+
+    #[test]
+    fn lease_renewal_failure_fails_closed() {
+        let error = renew_after_non_empty_page(&[input_row("orders", 1)], || {
+            Err(SekaiSourceError::FenceLost)
+        })
+        .unwrap_err();
+        assert_eq!(error, SekaiSourceError::FenceLost);
+    }
+
+    #[test]
+    fn expired_live_credential_is_refused_on_write_back() {
+        let now = SystemTime::now();
+        let stored = live_credential("cred-1", now - Duration::from_secs(1));
+        let presented = stored.clone();
+        let error = require_live_credential(&[stored], &presented, now).unwrap_err();
+        assert!(
+            matches!(error, SekaiSourceError::Transport(message) if message.contains("expired"))
+        );
+    }
+
+    #[test]
+    fn live_credential_is_accepted_before_expiry() {
+        let now = SystemTime::now();
+        let stored = live_credential("cred-1", now + Duration::from_secs(30));
+        let presented = stored.clone();
+        require_live_credential(&[stored], &presented, now).expect("live");
+    }
+
+    #[test]
+    fn unknown_live_credential_is_refused() {
+        let now = SystemTime::now();
+        let stored = live_credential("cred-1", now + Duration::from_secs(30));
+        let presented = live_credential("cred-other", now + Duration::from_secs(30));
+        let error = require_live_credential(&[stored], &presented, now).unwrap_err();
+        assert!(
+            matches!(error, SekaiSourceError::Transport(message) if message.contains("not live"))
+        );
+    }
+
+    #[test]
+    fn claim_scratch_is_removed() {
+        let root = tempfile::tempdir().unwrap();
+        let run = root.path().join("run-1");
+        fs::create_dir_all(&run).unwrap();
+        fs::write(run.join("in.csv"), "id\n1\n").unwrap();
+        fs::write(root.path().join("keep.txt"), "ok").unwrap();
+        remove_claim_scratch(root.path(), "run-1");
+        assert!(!run.exists());
+        assert_eq!(
+            fs::read_to_string(root.path().join("keep.txt")).unwrap(),
+            "ok"
+        );
+    }
+
+    #[test]
+    fn streamed_row_is_rejected_before_the_page_retains_it() {
+        let huge = "x".repeat((MAX_OUTPUT_BYTES as usize) + 1);
+        let mut page = Vec::new();
+        let mut budget = SnapshotBudget::default();
+        let error = push_snapshot_row(
+            &mut page,
+            &mut budget,
+            TransformRunInputRow {
+                alias: "orders".into(),
+                dataset_id: "orders".into(),
+                row_id: 1,
+                values: [("blob".into(), huge)].into_iter().collect(),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(page.is_empty());
+        assert!(
+            matches!(error, SekaiSourceError::Transport(message) if message.contains("byte write-back budget"))
+        );
+    }
+
+    #[test]
+    fn terminal_prep_failure_writes_a_quarantined_result() {
+        let write = prep_failure_write(&SekaiSourceError::Transport(
+            "isolated-process claim does not include executable code".into(),
+        ))
+        .expect("terminal");
+        assert!(write.quarantined);
+        assert!(write.rows.is_empty());
+        assert!(
+            write
+                .quality_rule
+                .contains("does not include executable code")
+        );
+    }
+
+    fn write_response(quarantined: bool, quality_rule: &str) -> WriteTransformRunResultResponse {
+        WriteTransformRunResultResponse {
+            run: Some(TransformRun {
+                quarantined,
+                quality_rule: quality_rule.into(),
+                ..Default::default()
+            }),
+        }
+    }
+
+    #[test]
+    fn quarantined_write_back_is_not_a_successful_complete() {
+        let error = require_committed_write(&write_response(true, "quality failed")).unwrap_err();
+        assert!(
+            matches!(error, SekaiSourceError::Quarantined(message) if message.contains("quality failed"))
+        );
+        require_committed_write(&write_response(false, "")).expect("committed");
+        let missing =
+            require_committed_write(&WriteTransformRunResultResponse { run: None }).unwrap_err();
+        assert!(
+            matches!(missing, SekaiSourceError::Transport(message) if message.contains("no transform run"))
+        );
+    }
+
+    #[test]
+    fn fence_loss_does_not_write_a_prep_failure() {
+        assert!(prep_failure_write(&SekaiSourceError::FenceLost).is_none());
+        assert!(prep_failure_write(&SekaiSourceError::Heartbeat("unavailable".into())).is_none());
+    }
+
+    #[test]
+    fn input_pages_enforce_byte_budget() {
+        let huge = "x".repeat((MAX_OUTPUT_BYTES as usize) + 1);
+        let error = collect_input_pages(|_, _| {
+            Ok(vec![TransformRunInputRow {
+                alias: "orders".into(),
+                dataset_id: "orders".into(),
+                row_id: 1,
+                values: [("blob".into(), huge.clone())].into_iter().collect(),
+                ..Default::default()
+            }])
+        })
+        .unwrap_err();
+        assert!(
+            matches!(error, SekaiSourceError::Transport(message) if message.contains("byte write-back budget"))
+        );
+    }
+
+    #[test]
+    fn input_pages_enforce_row_budget() {
+        let error = collect_input_pages(|_, _| {
+            Ok((1..=MAX_OUTPUT_ROWS.saturating_add(1))
+                .map(|id| input_row("orders", id as i64))
+                .collect())
+        })
+        .unwrap_err();
+        assert!(
+            matches!(error, SekaiSourceError::Transport(message) if message.contains("row write-back budget"))
         );
     }
 
@@ -1036,5 +1823,52 @@ mod tests {
             write.rows[0].values.get("message").map(String::as_str),
             Some("hello\nworld")
         );
+    }
+
+    #[ignore = "needs a local Sekai plane; set KAKO_SEKAI_TARGET, KAKO_SEKAI_NAMESPACE, and KAKO_SEKAI_CODE (isolated-process JobSpec omits SQL). Optional: KAKO_SEKAI_PRINCIPAL, KAKO_SEKAI_TOKEN, KAKO_SEKAI_ALLOW_INSECURE=1. The plane must expose one claimable isolated_process transform: a join and aggregate over two datasets (duckdb_sql or mizuchi)."]
+    #[test]
+    fn live_plane_stages_two_claim_scoped_inputs() {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut transport =
+            LiveClaimTransport::connect_from_env(scratch.path().to_path_buf()).unwrap();
+        let claimed = transport
+            .claim_next("kako-live")
+            .unwrap()
+            .expect("claimable isolated-process work");
+        assert!(
+            claimed.job.inputs.len() >= 2,
+            "join+agg needs two datasets, got {}",
+            claimed.job.inputs.len()
+        );
+        for input in &claimed.job.inputs {
+            assert!(input.path.is_file(), "{}", input.path.display());
+        }
+    }
+
+    #[ignore = "needs a local Sekai plane; set KAKO_SEKAI_TARGET, KAKO_SEKAI_NAMESPACE, and KAKO_SEKAI_CODE (isolated-process JobSpec omits SQL). Optional: KAKO_SEKAI_PRINCIPAL, KAKO_SEKAI_TOKEN, KAKO_SEKAI_ALLOW_INSECURE=1. The plane must expose one claimable isolated_process transform: a join and aggregate over two datasets (duckdb_sql or mizuchi)."]
+    #[test]
+    fn live_stale_fence_write_back_is_refused() {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut transport =
+            LiveClaimTransport::connect_from_env(scratch.path().to_path_buf()).unwrap();
+        let claimed = transport
+            .claim_next("kako-live")
+            .unwrap()
+            .expect("claimable isolated-process work");
+        let credential = transport
+            .mint_credential(&claimed.fence, &claimed.job, Duration::from_secs(30))
+            .unwrap();
+        let mut stale = claimed.fence.clone();
+        stale.fencing_token = "stale-fence".into();
+        let error = transport
+            .write_outputs(
+                &stale,
+                &credential,
+                &[],
+                &receipt_for(&claimed.job, "sha256:none"),
+            )
+            .unwrap_err();
+        assert_eq!(error, SekaiSourceError::FenceLost);
+        assert!(transport.last_receipt().is_none());
     }
 }

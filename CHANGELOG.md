@@ -6,6 +6,23 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Sekai adapter live claim transport over the published runtime-claim
+  client. Input snapshots page to exhaustion, cap retained row/cell/byte
+  size, and renew the claim lease after each non-empty page. The live
+  lease uses the plane's 300s cap (JobSource has no execute-time
+  heartbeat). Isolated JobSpec omits program bytes; live claims take
+  proto `sql` or `KAKO_SEKAI_CODE`. Write-back refuses an expired job
+  credential. A claimed transform that cannot be prepared is reported as
+  a runner failure under the fence. A plane-quarantined write-back is not
+  a successful complete and ends the held claim. Ignored tests cover a local-plane
+  join+agg (two datasets, receipt lineage) and stale-fence write-back.
+  Offline `cargo test` stays green. Prerequisites: `KAKO_SEKAI_TARGET`,
+  `KAKO_SEKAI_NAMESPACE`, `KAKO_SEKAI_CODE`, and a claimable
+  isolated-process transform
+  ([#35](https://github.com/Sannrox/kako/issues/35)).
+
 ### Security
 
 - Job claims may carry a wrapped tenant DEK. The runner unwraps it in
