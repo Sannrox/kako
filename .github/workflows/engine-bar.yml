@@ -1,0 +1,45 @@
+name: Engine bar
+
+# Scale-factor engine bar (docs/engine-requirements.md): mizuchi against the
+# default engine at SF1 and SF10 under the same sandbox limits. Not part of
+# pull-request CI except when the harness itself changes.
+on:
+  schedule:
+    - cron: "41 4 * * 0"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - scripts/engine-bar/sf/**
+      - .github/workflows/engine-bar.yml
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  engine-bar:
+    name: Engine bar SF${{ matrix.scale }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        scale: ["1", "10"]
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+      - name: Run engine bar
+        run: bash scripts/ci-cgroup-delegate.sh bash scripts/engine-bar/sf/run.sh "${{ matrix.scale }}" "engine-bar-sf${{ matrix.scale }}"
+      - name: Report
+        if: always()
+        run: python3 scripts/engine-bar/sf/report.py "engine-bar-sf${{ matrix.scale }}" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-bar-sf${{ matrix.scale }}
+          path: engine-bar-sf${{ matrix.scale }}
