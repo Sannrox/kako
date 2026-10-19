@@ -23,6 +23,7 @@ here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../../.." && pwd)"
 # Both engines get the same outer limits; each engine also runs one worker
 # with a 256 MiB internal memory cap.
+engine_memory_bytes=$((256 * 1024 * 1024))
 timeout_ms=1800000
 memory_bytes=$((4 * 1024 * 1024 * 1024))
 
@@ -43,11 +44,12 @@ jq -n \
   --arg scale "$scale" \
   --argjson cpus "$(getconf _NPROCESSORS_ONLN)" \
   --argjson mem_kib "$(awk '/MemTotal/ {print $2}' /proc/meminfo)" \
-  --arg kernel "$(uname -sr)" \
   --argjson memory_bytes "$memory_bytes" \
+  --argjson engine_memory_bytes "$engine_memory_bytes" \
   --argjson timeout_ms "$timeout_ms" \
-  '{scale: $scale, cpus: $cpus, memory_bytes_host: ($mem_kib * 1024), kernel: $kernel,
-    job_memory_bytes: $memory_bytes, job_timeout_ms: $timeout_ms}' \
+  '{scale: $scale, cpus: $cpus, memory_bytes_host: ($mem_kib * 1024),
+    job_memory_bytes: $memory_bytes, engine_memory_bytes: $engine_memory_bytes,
+    job_timeout_ms: $timeout_ms}' \
   >"$results/host.json"
 
 tables=(customer orders lineitem item date_dim store_sales)

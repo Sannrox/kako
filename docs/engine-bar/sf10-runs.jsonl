@@ -1,0 +1,8 @@
+{"scale":"10","query":"tpcds_store_sales","engine":"duckdb_sql","status":"ok","engine_version":"duckdb 1.5.6","duration_ms":2403,"cpu_usec":1698654,"memory_peak_bytes":376119296}
+{"scale":"10","query":"tpcds_store_sales","engine":"mizuchi","status":"ok","engine_version":"mizuchi 0.1.0","duration_ms":29335,"cpu_usec":11929997,"memory_peak_bytes":4294967296}
+{"scale":"10","query":"tpch_q1","engine":"duckdb_sql","status":"ok","engine_version":"duckdb 1.5.6","duration_ms":2446,"cpu_usec":1994496,"memory_peak_bytes":12771328}
+{"scale":"10","query":"tpch_q1","engine":"mizuchi","status":"failed","error":"kako: tpch_q1-mizuchi: limit: worker exited exit status: 3: limit: memory: this aggregate cannot spill"}
+{"scale":"10","query":"tpch_q3","engine":"duckdb_sql","status":"ok","engine_version":"duckdb 1.5.6","duration_ms":3345,"cpu_usec":2724153,"memory_peak_bytes":166924288}
+{"scale":"10","query":"tpch_q3","engine":"mizuchi","status":"failed","error":"kako: tpch_q3-mizuchi: limit: memory: cgroup oom: worker exited signal: 9 (SIGKILL): "}
+{"scale":"10","query":"tpch_q6","engine":"duckdb_sql","status":"ok","engine_version":"duckdb 1.5.6","duration_ms":1410,"cpu_usec":810491,"memory_peak_bytes":9932800}
+{"scale":"10","query":"tpch_q6","engine":"mizuchi","status":"ok","engine_version":"mizuchi 0.1.0","duration_ms":16396,"cpu_usec":15944106,"memory_peak_bytes":3977101312}

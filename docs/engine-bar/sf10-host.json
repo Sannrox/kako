@@ -1,0 +1,8 @@
+{
+  "scale": "10",
+  "cpus": 4,
+  "memory_bytes_host": 16766410752,
+  "job_memory_bytes": 4294967296,
+  "job_timeout_ms": 1800000,
+  "engine_memory_bytes": 268435456
+}

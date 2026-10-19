@@ -44,6 +44,17 @@ def same_result(left, right):
     )
 
 
+def typed_limit(error):
+    """A clean `Failure::Limit` from the engine, not a kill or a crash."""
+    return "limit: memory:" in error and "oom" not in error and "signal" not in error
+
+
+def failure_kind(error):
+    if "oom" in error:
+        return "killed by the job memory cap"
+    return "failed without a typed limit"
+
+
 def mib(value):
     return "" if value is None else f"{value / 1048576:.0f}"
 
@@ -81,6 +92,21 @@ def score(results):
                 "candidate_status": candidate["status"] if candidate else "missing",
             }
         )
+    # A typed `limit:` failure is allowed by the resource bar; a cgroup kill,
+    # an untyped crash or a peak above the job cap is not. The peak is the
+    # whole worker cgroup, so it is compared with the job cap; the engine's
+    # internal cap needs engine telemetry this harness does not have.
+    cap = host.get("job_memory_bytes")
+    resource_failures = [
+        f"{run['query']}/{run['engine']}: {failure_kind(run.get('error', ''))}"
+        for run in runs
+        if run["status"] != "ok" and not typed_limit(run.get("error", ""))
+    ] + [
+        f"{run['query']}/{run['engine']}: peak {mib(run['memory_peak_bytes'])} MiB "
+        f"over the {mib(cap)} MiB job cap"
+        for run in runs
+        if cap and run["status"] == "ok" and (run.get("memory_peak_bytes") or 0) > cap
+    ]
     geo_mean = math.exp(sum(map(math.log, ratios)) / len(ratios)) if ratios else None
     verdict = {
         "correctness": not failures and not mismatches,
@@ -88,7 +114,7 @@ def score(results):
         and len(ratios) == len(rows)
         and geo_mean <= GEO_MEAN_MAX
         and max(ratios) <= QUERY_MAX,
-        "resource": not failures,
+        "resource": not resource_failures,
     }
     versions = sorted({run["engine_version"] for run in runs if run.get("engine_version")})
     return {
@@ -100,6 +126,7 @@ def score(results):
         "max_ratio": max(ratios) if ratios else None,
         "failures": failures,
         "mismatches": mismatches,
+        "resource_failures": resource_failures,
         "verdict": verdict,
     }
 
@@ -109,8 +136,8 @@ def markdown(summary):
     lines = [
         f"### Scale factor {summary['scale']}",
         "",
-        f"Host: {host['cpus']} CPUs, {host['memory_bytes_host'] / 1073741824:.1f} GiB, "
-        f"{host['kernel']}. Engines: {', '.join(summary['engine_versions'])}.",
+        f"Host: {host['cpus']} CPUs, {host['memory_bytes_host'] / 1073741824:.1f} GiB. "
+        f"Engines: {', '.join(summary['engine_versions'])}.",
         "",
         "| query | duckdb ms | mizuchi ms | ratio | duckdb peak MiB | mizuchi peak MiB | results match |",
         "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
@@ -136,6 +163,12 @@ def markdown(summary):
         "| --- | --- |",
     ]
     lines += [f"| {name} | {'pass' if passed else 'fail'} |" for name, passed in verdict.items()]
+    lines.append("| engine-internal memory cap | not measured |")
+    notes = [f"incomplete: {name}" for name in summary["failures"]]
+    notes += [f"mismatch: {name}" for name in summary["mismatches"]]
+    notes += summary["resource_failures"]
+    if notes:
+        lines += [""] + [f"- {note}" for note in notes]
     return "\n".join(lines) + "\n"
 
 

@@ -1,0 +1,8 @@
+{"scale":"1","query":"tpcds_store_sales","engine":"duckdb_sql","status":"ok","engine_version":"duckdb 1.5.6","duration_ms":170,"cpu_usec":122345,"memory_peak_bytes":51441664}
+{"scale":"1","query":"tpcds_store_sales","engine":"mizuchi","status":"ok","engine_version":"mizuchi 0.1.0","duration_ms":537,"cpu_usec":497285,"memory_peak_bytes":254455808}
+{"scale":"1","query":"tpch_q1","engine":"duckdb_sql","status":"ok","engine_version":"duckdb 1.5.6","duration_ms":305,"cpu_usec":232190,"memory_peak_bytes":9822208}
+{"scale":"1","query":"tpch_q1","engine":"mizuchi","status":"failed","error":"kako: tpch_q1-mizuchi: limit: worker exited exit status: 3: limit: memory: this aggregate cannot spill"}
+{"scale":"1","query":"tpch_q3","engine":"duckdb_sql","status":"ok","engine_version":"duckdb 1.5.6","duration_ms":387,"cpu_usec":289361,"memory_peak_bytes":34078720}
+{"scale":"1","query":"tpch_q3","engine":"mizuchi","status":"ok","engine_version":"mizuchi 0.1.0","duration_ms":1975,"cpu_usec":1871842,"memory_peak_bytes":798408704}
+{"scale":"1","query":"tpch_q6","engine":"duckdb_sql","status":"ok","engine_version":"duckdb 1.5.6","duration_ms":205,"cpu_usec":123484,"memory_peak_bytes":6897664}
+{"scale":"1","query":"tpch_q6","engine":"mizuchi","status":"ok","engine_version":"mizuchi 0.1.0","duration_ms":1280,"cpu_usec":1195655,"memory_peak_bytes":413147136}
