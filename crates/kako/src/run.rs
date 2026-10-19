@@ -99,6 +99,112 @@ pub struct CompletedRun {
 /// Stage, sandbox, hash. The scratch tree lives in the returned value so
 /// `JobSource::complete` can copy outputs before cleanup.
 pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Failure> {
+    execute(job, config, None)
+}
+
+/// Largest `sample_rows` a preview accepts.
+pub const MAX_PREVIEW_ROWS: u64 = 10_000;
+
+/// Non-committing preview of a job: the same sandboxed run over inputs capped
+/// at `sample_rows`, returning each output's columns and rows. Nothing is
+/// handed to a job source and the scratch tree is removed on return.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Preview {
+    pub sample_rows: u64,
+    pub receipt: Receipt,
+    pub outputs: Vec<PreviewOutput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PreviewOutput {
+    pub name: String,
+    pub columns: Vec<PreviewColumn>,
+    /// Values rendered as text; `None` is SQL NULL.
+    pub rows: Vec<Vec<Option<String>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct PreviewColumn {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+impl Preview {
+    /// Preview JSON: the receipt is marked `"committing": false`.
+    pub fn to_json(&self) -> Result<String, String> {
+        let receipt: serde_json::Value =
+            serde_json::from_str(&crate::receipt::to_json(&self.receipt)?)
+                .map_err(|error| format!("receipt json: {error}"))?;
+        let body = serde_json::json!({
+            "committing": false,
+            "sample_rows": self.sample_rows,
+            "receipt": receipt,
+            "outputs": self.outputs,
+        });
+        serde_json::to_string_pretty(&body).map_err(|error| format!("preview json: {error}"))
+    }
+}
+
+/// Run `job` as a preview. Only `duckdb_sql` jobs preview; encrypted jobs are
+/// refused because sampled plaintext rows would bypass output sealing.
+pub fn preview_job(job: &Job, config: &RunnerConfig, sample_rows: u64) -> Result<Preview, Failure> {
+    if sample_rows > MAX_PREVIEW_ROWS {
+        return Err(Failure::Runner(format!(
+            "sample_rows {sample_rows} exceeds {MAX_PREVIEW_ROWS}"
+        )));
+    }
+    let run = sampled_run(job, config, sample_rows, true)?;
+    let raw = fs::read_to_string(run._scratch.path().join(crate::manifest::PREVIEW_FILE))
+        .map_err(|error| Failure::Runner(format!("read preview: {error}")))?;
+    #[derive(serde::Deserialize)]
+    struct File {
+        outputs: Vec<PreviewOutput>,
+    }
+    let file: File = serde_json::from_str(&raw)
+        .map_err(|error| Failure::Runner(format!("parse preview: {error}")))?;
+    Ok(Preview {
+        sample_rows,
+        receipt: run.receipt,
+        outputs: file.outputs,
+    })
+}
+
+/// Check a job before a run: the same sandboxed dry run as [`preview_job`]
+/// over empty inputs typed as a full run types them, so unknown columns, bad join
+/// keys and type errors surface as binder errors with line locations. Writes
+/// nothing outside scratch.
+pub fn validate_job(job: &Job, config: &RunnerConfig) -> Result<(), Failure> {
+    sampled_run(job, config, 0, false).map(|_| ())
+}
+
+/// Sandboxed run over each input's first `rows` rows. Staged input files
+/// cannot be read directly, so SQL sees only the sample.
+fn sampled_run(
+    job: &Job,
+    config: &RunnerConfig,
+    rows: u64,
+    capture: bool,
+) -> Result<CompletedRun, Failure> {
+    if job.engine != Engine::DuckDbSql {
+        return Err(Failure::Runner(format!(
+            "preview and validate support duckdb_sql jobs, not `{}`",
+            job.engine.as_str()
+        )));
+    }
+    if job.encryption.is_some() {
+        return Err(Failure::Runner(
+            "preview refuses encrypted jobs: sampled rows would bypass output sealing".into(),
+        ));
+    }
+    execute(job, config, Some((rows, capture)))
+}
+
+fn execute(
+    job: &Job,
+    config: &RunnerConfig,
+    sample: Option<(u64, bool)>,
+) -> Result<CompletedRun, Failure> {
     QuotaKey::from_job(job).map_err(Failure::Runner)?;
     if !matches!(job.engine, crate::Engine::Python) && job.runtime_image.is_some() {
         return Err(Failure::Runner(
@@ -146,8 +252,13 @@ pub fn execute_job(job: &Job, config: &RunnerConfig) -> Result<CompletedRun, Fai
         kako_core::marking::refuse_under_marked(job, &kako_core::marking::input_union(job))
             .map_err(Failure::Runner)?;
     }
-    kako_core::manifest::write_manifest_from_job(scratch.path(), job, &staged)
-        .map_err(Failure::Runner)?;
+    match sample {
+        Some((rows, capture)) => {
+            kako_core::manifest::write_preview_manifest(scratch.path(), job, &staged, rows, capture)
+        }
+        None => kako_core::manifest::write_manifest_from_job(scratch.path(), job, &staged),
+    }
+    .map_err(Failure::Runner)?;
     if let Some(site) = python_image
         .as_ref()
         .and_then(|image| image.site_packages.as_ref())

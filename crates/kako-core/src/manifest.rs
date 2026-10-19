@@ -30,7 +30,17 @@ pub struct Manifest {
     pub outputs: Vec<String>,
     #[serde(default)]
     pub write_mode: Option<String>,
+    /// Preview or validation row cap. When set, each input is its first this
+    /// many rows and direct reads of staged input files are refused.
+    #[serde(default)]
+    pub sample_rows: Option<u64>,
+    /// With `sample_rows`, write [`PREVIEW_FILE`] with each output's rows.
+    #[serde(default)]
+    pub capture: bool,
 }
+
+/// Scratch-relative file a preview run writes: per-output schema and rows.
+pub const PREVIEW_FILE: &str = "preview.json";
 
 impl Manifest {
     /// Parsed output commit mode, defaulting to overwrite.
@@ -62,7 +72,7 @@ pub fn write_manifest_with(
     outputs: &[String],
     write_mode: WriteMode,
 ) -> Result<(), String> {
-    write_manifest_inputs(scratch, engine, sql, inputs, &[], outputs, write_mode)
+    write_manifest_inputs(scratch, engine, sql, inputs, &[], outputs, write_mode, None)
 }
 
 /// Write the worker manifest, copying marking labels from `job`.
@@ -79,9 +89,32 @@ pub fn write_manifest_from_job(
         &job.inputs,
         &job.outputs,
         job.write_mode,
+        None,
     )
 }
 
+/// Write a sampled manifest: inputs capped at `sample_rows`, nothing committed.
+/// `capture` asks the engine for [`PREVIEW_FILE`].
+pub fn write_preview_manifest(
+    scratch: &Path,
+    job: &Job,
+    staged: &[(String, PathBuf)],
+    sample_rows: u64,
+    capture: bool,
+) -> Result<(), String> {
+    write_manifest_inputs(
+        scratch,
+        job.engine,
+        &job.code,
+        staged,
+        &job.inputs,
+        &job.outputs,
+        job.write_mode,
+        Some((sample_rows, capture)),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
 fn write_manifest_inputs(
     scratch: &Path,
     engine: Engine,
@@ -90,6 +123,7 @@ fn write_manifest_inputs(
     job_inputs: &[Input],
     outputs: &[String],
     write_mode: WriteMode,
+    sample: Option<(u64, bool)>,
 ) -> Result<(), String> {
     let engine = match engine {
         Engine::DuckDbSql => "duckdb_sql",
@@ -110,6 +144,8 @@ fn write_manifest_inputs(
         }).collect::<Vec<_>>(),
         "outputs": outputs,
         "write_mode": write_mode.as_str(),
+        "sample_rows": sample.map(|(rows, _)| rows),
+        "capture": sample.is_some_and(|(_, capture)| capture),
     });
     fs::write(scratch.join("manifest.json"), body.to_string())
         .map_err(|error| format!("write manifest: {error}"))
