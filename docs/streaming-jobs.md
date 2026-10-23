@@ -70,3 +70,20 @@ A windowed plan must restore its state to the batch start on every rewind,
 from durable state after a restart. Topic, consumer group, plane and plan
 are traits. The live topic client, the plane transport and the mizuchi plan
 adapter plug in there.
+
+## Metrics
+
+The runner keeps `StreamingMetrics` per partition (#66), and
+`StreamingMetrics::render(job_id, now)` writes them in the Prometheus text
+format. Every series is labelled `job_id` and `partition`, so cardinality
+stays bounded by the job's partitions.
+
+| Metric | Type | Meaning |
+| --- | --- | --- |
+| `kako_streaming_lag_records` | gauge | Offsets between the partition position and the source head, measured on every step before the apply. Absent until measured or when the head read failed. |
+| `kako_streaming_records_applied_total` | counter | Records in batches this worker applied fresh. Replayed checkpoints are not counted. |
+| `kako_streaming_batches_applied_total` | counter | Batches this worker applied fresh. |
+| `kako_streaming_checkpoint_age_seconds` | gauge | Seconds since the consumer group last committed a checkpoint, or since this worker resumed the partition when it has not committed one yet. It keeps growing while apply is blocked. |
+
+The topic trait's `head` gives the source head. The counters start at zero
+for each worker.
