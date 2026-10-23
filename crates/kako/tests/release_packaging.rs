@@ -195,8 +195,10 @@ fn release_workflow_builds_signed_tag_artifacts() {
     let yaml = fs::read_to_string(workspace_root().join(".github/workflows/release.yml")).unwrap();
     assert!(yaml.contains("scripts/release-dry-run.sh"), "{yaml}");
     assert!(yaml.contains("--with-images"), "{yaml}");
+    // Pinned to a commit SHA, with the tag it resolves from as a comment.
     assert!(
-        yaml.contains("actions/attest-build-provenance@v3"),
+        yaml.lines()
+            .any(|line| line.contains("actions/attest-build-provenance@") && line.contains("# v3")),
         "{yaml}"
     );
     assert!(yaml.contains("gh release create"), "{yaml}");
