@@ -19,8 +19,13 @@
 //!
 //! Topic, group and plane are traits: the live topic client and the plane
 //! transport plug in here.
+//!
+//! The runner keeps [`StreamingMetrics`] per partition (#66): lag behind the
+//! source head, records and batches applied, and checkpoint age.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use std::time::Instant;
 
 use kako_core::streaming::StreamingJobSpec;
 
@@ -63,6 +68,8 @@ pub struct ApplyReceipt {
 pub trait PartitionLog {
     /// The lowest offset still retained.
     fn earliest(&mut self, partition: u32) -> Result<u64, String>;
+    /// The offset after the newest record: the source head lag is measured to.
+    fn head(&mut self, partition: u32) -> Result<u64, String>;
     /// Up to `max` records from `from` on, in offset order; empty when none.
     fn read(&mut self, partition: u32, from: u64, max: usize) -> Result<Vec<Record>, String>;
 }
@@ -153,6 +160,85 @@ impl From<SekaiSourceError> for StreamError {
     }
 }
 
+/// Progress of one partition, as [`StreamingRunner`] last saw it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PartitionMetrics {
+    /// Offsets between the position and the source head, measured on every
+    /// step. `None` until measured, or when the head read failed.
+    pub lag: Option<u64>,
+    /// Records in batches this worker applied fresh; replays are not counted.
+    pub records_applied: u64,
+    pub batches_applied: u64,
+    /// When the consumer group last committed a checkpoint, or when this
+    /// worker resumed the partition if it has not committed one yet.
+    pub last_checkpoint: Option<Instant>,
+}
+
+/// Per-partition streaming metrics of one job.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StreamingMetrics {
+    pub partitions: BTreeMap<u32, PartitionMetrics>,
+}
+
+impl StreamingMetrics {
+    /// Renders the metrics in the Prometheus text format, labelled by
+    /// `job_id` and partition. Checkpoint age is measured at `now`.
+    pub fn render(&self, job_id: &str, now: Instant) -> String {
+        let job = job_id
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n");
+        let mut out = String::new();
+        type Sample = fn(&PartitionMetrics, Instant) -> Option<f64>;
+        let families: [(&str, &str, &str, Sample); 4] = [
+            (
+                "kako_streaming_lag_records",
+                "gauge",
+                "Offsets between the partition position and the source head.",
+                |partition, _| partition.lag.map(|lag| lag as f64),
+            ),
+            (
+                "kako_streaming_records_applied_total",
+                "counter",
+                "Records in batches this worker applied fresh.",
+                |partition, _| Some(partition.records_applied as f64),
+            ),
+            (
+                "kako_streaming_batches_applied_total",
+                "counter",
+                "Batches this worker applied fresh.",
+                |partition, _| Some(partition.batches_applied as f64),
+            ),
+            (
+                "kako_streaming_checkpoint_age_seconds",
+                "gauge",
+                "Seconds since the partition's last committed checkpoint.",
+                |partition, now| {
+                    partition
+                        .last_checkpoint
+                        .map(|at| now.saturating_duration_since(at).as_secs_f64())
+                },
+            ),
+        ];
+        for (name, kind, help, value) in families {
+            let _ = writeln!(out, "# HELP {name} {help}\n# TYPE {name} {kind}");
+            for (partition, metrics) in &self.partitions {
+                if let Some(value) = value(metrics, now) {
+                    let _ = writeln!(
+                        out,
+                        "{name}{{job_id=\"{job}\",partition=\"{partition}\"}} {value}"
+                    );
+                }
+            }
+        }
+        out
+    }
+
+    fn partition(&mut self, partition: u32) -> &mut PartitionMetrics {
+        self.partitions.entry(partition).or_default()
+    }
+}
+
 /// Moves a claimed streaming job's partitions forward under one fence.
 pub struct StreamingRunner<'a, L, G, P, B> {
     pub spec: &'a StreamingJobSpec,
@@ -163,6 +249,7 @@ pub struct StreamingRunner<'a, L, G, P, B> {
     pub plan: B,
     /// Most records one batch takes.
     pub max_batch: usize,
+    pub metrics: StreamingMetrics,
 }
 
 impl<L, G, P, B> StreamingRunner<'_, L, G, P, B>
@@ -191,6 +278,8 @@ where
                 .unwrap_or(0),
         };
         self.require_retained(partition, start)?;
+        let metrics = self.metrics.partition(partition);
+        metrics.last_checkpoint.get_or_insert_with(Instant::now);
         Ok(start)
     }
 
@@ -224,6 +313,9 @@ where
         // Checked after the read: retention that moved past `start` while
         // the batch was read would otherwise look like sparse offsets.
         self.require_retained(partition, start)?;
+        // Measured before the apply, so lag keeps growing while apply is blocked.
+        let head = self.log.head(partition).ok();
+        self.metrics.partition(partition).lag = head.map(|head| head.saturating_sub(start));
         let Some(last) = records.last() else {
             return Ok(None);
         };
@@ -268,9 +360,19 @@ where
             .and_then(|position| position.position.parse::<u64>().ok())
             .filter(|next| *next > start)
             .ok_or_else(|| StreamError::ReceiptMismatch(format!("no end position for {source}")))?;
+        // Counted before the group commit: a retry after a failed commit
+        // replays this checkpoint and would never count it.
+        if !receipt.replay {
+            let metrics = self.metrics.partition(partition);
+            metrics.records_applied += records.len() as u64;
+            metrics.batches_applied += 1;
+        }
         self.group
             .commit(partition, next)
             .map_err(StreamError::Group)?;
+        let metrics = self.metrics.partition(partition);
+        metrics.last_checkpoint = Some(Instant::now());
+        metrics.lag = head.map(|head| head.saturating_sub(next));
         Ok(Some(next))
     }
 
@@ -378,6 +480,13 @@ mod tests {
     impl PartitionLog for Log {
         fn earliest(&mut self, _: u32) -> Result<u64, String> {
             Ok(self.earliest)
+        }
+
+        fn head(&mut self, _: u32) -> Result<u64, String> {
+            Ok(self
+                .records
+                .last()
+                .map_or(self.earliest, |last| last.offset + 1))
         }
 
         fn read(&mut self, _: u32, from: u64, max: usize) -> Result<Vec<Record>, String> {
@@ -604,6 +713,7 @@ mod tests {
                 plane: plane.clone(),
                 plan: plan(),
                 max_batch: 1 + rng.below(9) as usize,
+                metrics: StreamingMetrics::default(),
             };
             if runner.drain(0).is_ok() {
                 break;
@@ -674,6 +784,7 @@ mod tests {
             plane: plane.clone(),
             plan: PerRecord,
             max_batch: 4,
+            metrics: StreamingMetrics::default(),
         };
         let mut stale = worker(1);
         let first = stale.resume_position(0).unwrap();
@@ -719,6 +830,7 @@ mod tests {
             plane,
             plan: PerRecord,
             max_batch: 4,
+            metrics: StreamingMetrics::default(),
         };
         assert_eq!(
             runner.drain(0),
@@ -735,5 +847,91 @@ mod tests {
             runner.step(0, next),
             Err(StreamError::CheckpointUnknown { partition: 0 })
         );
+    }
+
+    #[test]
+    fn metrics_follow_lag_throughput_and_checkpoint_age() {
+        let spec = spec();
+        let crash = Rc::new(RefCell::new(CrashPlan::default()));
+        let mut runner = StreamingRunner {
+            spec: &spec,
+            fence: fence(0),
+            log: Log {
+                records: records(10),
+                earliest: 0,
+                crash: crash.clone(),
+            },
+            group: Group {
+                crash: crash.clone(),
+                ..Group::default()
+            },
+            plane: Plane {
+                state: Rc::new(RefCell::new(PlaneState::default())),
+                crash: crash.clone(),
+            },
+            plan: PerRecord,
+            max_batch: 4,
+            metrics: StreamingMetrics::default(),
+        };
+        let start = runner.resume_position(0).unwrap();
+        runner.step(0, start).unwrap().unwrap();
+        let partition = runner.metrics.partitions[&0].clone();
+        assert_eq!(
+            (
+                partition.lag,
+                partition.records_applied,
+                partition.batches_applied
+            ),
+            (Some(6), 4, 1)
+        );
+        runner.drain(0).unwrap();
+        let partition = runner.metrics.partitions[&0].clone();
+        assert_eq!(
+            (
+                partition.lag,
+                partition.records_applied,
+                partition.batches_applied
+            ),
+            (Some(0), 10, 3)
+        );
+
+        // New records arrive while the plane refuses every apply: lag grows,
+        // throughput stays, and the last checkpoint does not move.
+        let committed = partition.last_checkpoint.unwrap();
+        runner.log.records = records(15);
+        crash.borrow_mut().applies_before = Some(0);
+        assert!(runner.step(0, 10).is_err());
+        let blocked = runner.metrics.partitions[&0].clone();
+        assert_eq!(
+            (
+                blocked.lag,
+                blocked.records_applied,
+                blocked.batches_applied
+            ),
+            (Some(5), 10, 3)
+        );
+        assert_eq!(blocked.last_checkpoint, Some(committed));
+        let age = |at: Instant| {
+            let text = runner.metrics.render("orders-stream", at);
+            text.lines()
+                .find_map(|line| {
+                    line.strip_prefix(
+                        "kako_streaming_checkpoint_age_seconds{job_id=\"orders-stream\",partition=\"0\"} ",
+                    )
+                })
+                .unwrap()
+                .parse::<f64>()
+                .unwrap()
+        };
+        let later = committed + std::time::Duration::from_secs(5);
+        assert!(age(later) >= 5.0 && age(later) > age(committed));
+        let text = runner.metrics.render("orders-stream", later);
+        for line in [
+            "kako_streaming_lag_records{job_id=\"orders-stream\",partition=\"0\"} 5",
+            "kako_streaming_records_applied_total{job_id=\"orders-stream\",partition=\"0\"} 10",
+            "kako_streaming_batches_applied_total{job_id=\"orders-stream\",partition=\"0\"} 3",
+        ] {
+            assert!(text.lines().any(|candidate| candidate == line), "{text}");
+        }
     }
 }
