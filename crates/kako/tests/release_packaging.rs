@@ -195,8 +195,10 @@ fn release_workflow_builds_signed_tag_artifacts() {
     let yaml = fs::read_to_string(workspace_root().join(".github/workflows/release.yml")).unwrap();
     assert!(yaml.contains("scripts/release-dry-run.sh"), "{yaml}");
     assert!(yaml.contains("--with-images"), "{yaml}");
+    // Pinned to a commit SHA, with the tag it resolves from as a comment.
     assert!(
-        yaml.contains("actions/attest-build-provenance@v3"),
+        yaml.lines()
+            .any(|line| line.contains("actions/attest-build-provenance@") && line.contains("# v3")),
         "{yaml}"
     );
     assert!(yaml.contains("gh release create"), "{yaml}");
@@ -210,7 +212,7 @@ fn release_workflow_builds_signed_tag_artifacts() {
         "attest and publish must be tag-only: {yaml}"
     );
     let attest_idx = yaml
-        .find("actions/attest-build-provenance@v3")
+        .find("actions/attest-build-provenance@")
         .expect("missing attest action");
     let tag_gate_before_attest = yaml[..attest_idx]
         .rfind("startsWith(github.ref, 'refs/tags/v')")
