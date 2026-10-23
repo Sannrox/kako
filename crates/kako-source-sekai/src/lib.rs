@@ -495,6 +495,7 @@ pub fn sample_claimed_job(scratch: &Path, runtime_id: &str) -> (Job, Fence) {
 
 #[cfg(feature = "sekai-client")]
 pub mod live;
+pub mod streaming;
 #[cfg(feature = "sekai-client")]
 pub use live::LiveClaimTransport;
 
