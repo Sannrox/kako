@@ -46,3 +46,27 @@ Validation refuses any other shape by name and never runs it as a batch
 job: another source kind, a dataset or other sink, a missing plan, a
 partition listed twice or a start offset for a partition the job does not
 own. Running a streaming job is a separate issue.
+
+## Runner
+
+`kako_source_sekai::streaming::StreamingRunner` (#65) moves a claimed
+streaming job forward under the claim's fence, one batch of one partition at
+a time:
+
+1. Heartbeat the claim.
+2. Read a batch.
+3. Rewind the plan to the batch start, then run it.
+4. Apply the edits through the plane with the checkpoint key and the batch
+   end.
+5. Commit the consumer group to the end the receipt names.
+
+A restart resumes from the group offset, or from the spec's start offset
+when the group has none. It replays forward: a replayed checkpoint returns
+its original receipt, whose end decides where reading continues. A partition
+whose start is past retention is refused as `checkpoint_unknown`. A worker
+whose fence is no longer current stops at its next heartbeat or apply.
+
+A windowed plan must restore its state to the batch start on every rewind,
+from durable state after a restart. Topic, consumer group, plane and plan
+are traits. The live topic client, the plane transport and the mizuchi plan
+adapter plug in there.
