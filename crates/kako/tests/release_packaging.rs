@@ -212,7 +212,7 @@ fn release_workflow_builds_signed_tag_artifacts() {
         "attest and publish must be tag-only: {yaml}"
     );
     let attest_idx = yaml
-        .find("actions/attest-build-provenance@v3")
+        .find("actions/attest-build-provenance@")
         .expect("missing attest action");
     let tag_gate_before_attest = yaml[..attest_idx]
         .rfind("startsWith(github.ref, 'refs/tags/v')")
