@@ -193,6 +193,7 @@ mod tests {
             output_markings,
             declassify,
             encryption: None,
+            model: None,
         }
     }
 

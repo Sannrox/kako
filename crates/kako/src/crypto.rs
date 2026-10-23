@@ -234,6 +234,7 @@ mod tests {
             output_markings: Default::default(),
             declassify: None,
             encryption: Some(claim),
+            model: None,
         }
     }
 

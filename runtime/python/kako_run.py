@@ -24,9 +24,13 @@ def _load_user(path: Path):
 
 
 def _read_frame(path: Path):
+    """A staged input as a frame. A model artifact (`.onnx`) is passed as its
+    read-only path, for the scoring program to load."""
     import polars as pl
 
     suffix = path.suffix.lower()
+    if suffix == ".onnx":
+        return path
     if suffix == ".parquet":
         return pl.read_parquet(path)
     if suffix in {".arrow", ".feather", ".ipc"}:

@@ -8,6 +8,14 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Scoring jobs from a model registry batch descriptor. A `scoring` section
+  names the signed descriptor, the trusted registry keys and the `.onnx`
+  artifact. Kako verifies both signatures and the artifact digest before
+  the run, and again on the staged copy. It generates the scoring program
+  from the descriptor's binding and output fields and runs it with ONNX
+  Runtime in the Python sandbox. Receipts gain `model` (registry version,
+  artifact and descriptor digests). The Python lockfile adds ONNX Runtime
+  (#54).
 - `kako replay` re-runs a pipeline's steps at pinned input, code, engine
   and Python runtime image versions into a branch directory. It checks
   every pin before anything runs, reports each step that cannot be

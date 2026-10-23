@@ -521,6 +521,128 @@ fn assert_join_csv(csv: &str) {
     assert!(csv.contains('7'), "expected aggregate 7, got {csv}");
 }
 
+/// A scoring job in `dir` from the registry fixtures, scoring
+/// `customers.csv` with `artifact` (the signed model unless swapped).
+fn scoring_job(dir: &Path, artifact: &[u8]) -> std::path::PathBuf {
+    let fixtures =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/scoring");
+    for name in [
+        "batch-descriptor.json",
+        "registry-keys.json",
+        "customers.csv",
+    ] {
+        fs::copy(fixtures.join(name), dir.join(name)).unwrap();
+    }
+    fs::write(dir.join("churn.onnx"), artifact).unwrap();
+    let job = dir.join("job.json");
+    let body = serde_json::json!({
+        "id": "score-churn",
+        "scoring": {
+            "descriptor": "batch-descriptor.json",
+            "trusted_keys": "registry-keys.json",
+            "artifact": "churn.onnx"
+        },
+        "inputs": {"customers": "customers.csv"},
+        "input_markings": {"customers": ["pii"]},
+        "outputs": ["scores.csv"],
+        "output_markings": {"scores.csv": ["pii"]},
+        "timeout_ms": 30000
+    });
+    fs::write(&job, body.to_string()).unwrap();
+    job
+}
+
+#[test]
+fn a_scoring_model_keeps_its_declared_markings() {
+    let fixtures =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/scoring");
+    let dir = tempfile::tempdir().unwrap();
+    let path = scoring_job(dir.path(), &fs::read(fixtures.join("churn.onnx")).unwrap());
+    let mut body: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    body["input_markings"]["model"] = serde_json::json!(["restricted"]);
+    fs::write(&path, body.to_string()).unwrap();
+    let job = kako::local::load_job(&path).unwrap();
+    let model = job
+        .inputs
+        .iter()
+        .find(|input| input.name == "model")
+        .unwrap();
+    assert_eq!(model.markings, ["restricted"]);
+    assert_eq!(job.model.unwrap().model, "churn");
+}
+
+#[test]
+fn a_scoring_job_refuses_an_artifact_the_descriptor_does_not_sign() {
+    let dir = tempfile::tempdir().unwrap();
+    let job = scoring_job(dir.path(), b"weights from somewhere else");
+    let error = kako::local::load_job(&job).unwrap_err();
+    assert!(error.0.contains("artifact digest mismatch"), "{error:?}");
+}
+
+#[test]
+fn cli_python_scores_rows_with_a_registry_model() {
+    if !require_linux_native_for_python() {
+        return;
+    }
+    if !python_runtime_available() {
+        skip_python("python runtime with polars is unavailable");
+        return;
+    }
+    let fixtures =
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/scoring");
+    let dir = tempfile::tempdir().unwrap();
+    let job = scoring_job(dir.path(), &fs::read(fixtures.join("churn.onnx")).unwrap());
+    let out = dir.path().join("out");
+    let status = Command::new(worker())
+        .arg("run")
+        .arg(&job)
+        .arg("--output")
+        .arg(&out)
+        .status()
+        .unwrap();
+    assert!(status.success(), "kako run scoring failed: {status}");
+    // score = 0.02 age + 0.1 tenure - 0.001 spend - 0.5; label = score > 0.5.
+    let csv = fs::read_to_string(out.join("scores.csv")).unwrap();
+    let rows: Vec<(f64, i64)> = csv
+        .lines()
+        .skip(1)
+        .map(|line| {
+            let (score, label) = line.split_once(',').unwrap();
+            (score.parse().unwrap(), label.parse().unwrap())
+        })
+        .collect();
+    assert_eq!(rows.len(), 3, "{csv}");
+    for ((score, label), (expected, expected_label)) in
+        rows.iter().zip([(0.23, 0), (1.16, 1), (-0.31, 0)])
+    {
+        assert!((score - expected).abs() < 1e-5, "{csv}");
+        assert_eq!(*label, expected_label, "{csv}");
+    }
+    let receipt: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(out.join("receipt.json")).unwrap()).unwrap();
+    let digest = "sha256:4c5e73927ad2ef3adc6a26be4b776fefb948de9272e985c6eed3979d3a1728fa";
+    assert_eq!(receipt["model"]["model"], "churn", "{receipt}");
+    assert_eq!(receipt["model"]["version"], 1, "{receipt}");
+    assert_eq!(receipt["model"]["artifact_digest"], digest, "{receipt}");
+    assert_eq!(receipt["inputs"]["model"], digest, "{receipt}");
+    assert!(
+        receipt["inputs"]["customers"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert!(
+        receipt["outputs"]["scores.csv"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert_eq!(
+        receipt["output_markings"]["scores.csv"],
+        serde_json::json!(["pii"])
+    );
+}
+
 #[test]
 fn cli_python_polars_join() {
     if !require_linux_native_for_python() {

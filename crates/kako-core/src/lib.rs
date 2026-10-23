@@ -138,6 +138,24 @@ pub struct Job {
     /// Wrapped tenant DEK delivered with the claim. The runner unwraps it
     /// in-process; it never enters the scratch tree or sandbox environment.
     pub encryption: Option<JobKeyClaim>,
+    /// The registry model a scoring job scores with. The runner checks the
+    /// staged `model` input against its artifact digest before the run, and
+    /// the receipt records it.
+    pub model: Option<ModelRef>,
+}
+
+/// A model version from a verified registry descriptor.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ModelRef {
+    pub namespace: String,
+    pub model: String,
+    pub version: u64,
+    /// `sha256:<hex>` of the model artifact.
+    pub artifact_digest: String,
+    /// The registry key that signed the descriptor.
+    pub key_id: String,
+    /// `sha256:<hex>` of the signed descriptor bytes.
+    pub descriptor_digest: String,
 }
 
 /// Wrapped data key the job source attached to a claim.
@@ -228,6 +246,8 @@ pub struct Receipt {
     /// `ready` after a keyed run, `revoked` when unwrap failed. Omitted when
     /// the job was not encrypted.
     pub key_state: Option<String>,
+    /// The model a scoring job scored with.
+    pub model: Option<ModelRef>,
 }
 
 /// One input scan after projection and partition prune.
@@ -370,6 +390,7 @@ mod tests {
             output_markings: BTreeMap::new(),
             declassify: None,
             encryption: None,
+            model: None,
         };
         Empty.release(&job).unwrap();
         assert_eq!(Empty.next_job().unwrap(), None);

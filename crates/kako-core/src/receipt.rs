@@ -44,6 +44,9 @@ struct FileReceipt<'a> {
     key_ids: Vec<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     key_state: Option<&'a str>,
+    /// The registry model a scoring job scored with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    model: Option<&'a crate::ModelRef>,
 }
 
 /// Serialize a receipt as stable JSON (sorted maps, trailing newline).
@@ -91,6 +94,7 @@ pub fn to_json(receipt: &Receipt) -> Result<String, String> {
         declassify: receipt.declassify.as_ref(),
         key_ids: receipt.key_ids.iter().map(String::as_str).collect(),
         key_state: receipt.key_state.as_deref(),
+        model: receipt.model.as_ref(),
     };
     let mut json = serde_json::to_string_pretty(&body)
         .map_err(|error| format!("serialize receipt: {error}"))?;
@@ -127,6 +131,7 @@ mod tests {
             declassify: None,
             key_ids: Vec::new(),
             key_state: None,
+            model: None,
         };
         let json = to_json(&receipt).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -177,6 +182,7 @@ mod tests {
             }),
             key_ids: Vec::new(),
             key_state: None,
+            model: None,
         };
         let json = to_json(&receipt).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -217,6 +223,7 @@ mod tests {
             declassify: None,
             key_ids: vec!["dek-1".into(), "kek-1".into()],
             key_state: Some("ready".into()),
+            model: None,
         };
         let json = to_json(&receipt).unwrap();
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();

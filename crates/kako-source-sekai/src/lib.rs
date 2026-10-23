@@ -482,6 +482,7 @@ pub fn sample_claimed_job(scratch: &Path, runtime_id: &str) -> (Job, Fence) {
         output_markings: Default::default(),
         declassify: None,
         encryption: None,
+        model: None,
     };
     let fence = Fence {
         run_id: "run-1".into(),
@@ -525,6 +526,7 @@ mod tests {
             declassify: None,
             key_ids: Vec::new(),
             key_state: None,
+            model: None,
         }
     }
 

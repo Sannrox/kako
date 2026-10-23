@@ -566,6 +566,7 @@ mod tests {
             declassify: None,
             key_ids: Vec::new(),
             key_state: None,
+            model: None,
         };
         let json = kako_core::receipt::to_json(&receipt).unwrap();
         let mut value: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -910,6 +911,7 @@ mod tests {
             output_markings: Default::default(),
             declassify: None,
             encryption: None,
+            model: None,
         };
         let error = kako_core::marking::refuse_under_marked(
             &job,

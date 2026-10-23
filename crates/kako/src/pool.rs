@@ -500,6 +500,7 @@ mod tests {
             output_markings: Default::default(),
             declassify: None,
             encryption: None,
+            model: None,
         }
     }
 
@@ -776,6 +777,7 @@ mod tests {
             declassify: None,
             key_ids: Vec::new(),
             key_state: None,
+            model: None,
         }
     }
 }

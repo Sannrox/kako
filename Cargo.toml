@@ -39,5 +39,7 @@ rand = { version = "0.8", features = ["std"] }
 serde = { version = "1", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
 sha2 = { version = "0.10", default-features = false, features = ["std"] }
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
+base64 = "0.22"
 libc = "0.2"
 tempfile = "3"
