@@ -11,6 +11,7 @@ USAGE:
     kako run <job.json> [--output <dir>] [--tenant <id>] [--namespace <ns>] [--require-identity]
     kako validate <job.json>
     kako preview <job.json> [--rows <n>]
+    kako replay <replay.json> [--output <dir>] [--check]
     kako serve --listen <addr> [--hand-back] [--idle-ms <n>] [<job.json>] [--output <dir>] [--tenant <id>] [--namespace <ns>] [--require-identity]
     kako doctor
     kako [--version | --help]
@@ -26,6 +27,11 @@ keys and type errors are reported with locations. `kako preview` runs a SQL
 job on at most --rows rows per input (default 100) and prints each output's
 columns and rows with a receipt marked non-committing. Both read inputs only
 through their named tables and write no output directory.
+`kako replay` re-runs a pipeline's steps at pinned input, code, engine and
+runtime image versions into a branch directory under <dir> (`/` in the
+branch is written `%2F`) and writes replay.json there.
+It runs nothing when a pin is unavailable. --check only reports which steps
+cannot be reproduced.
 `kako serve` exposes /health, /ready, and /version, claims an optional local
 job file, and drains on SIGTERM. Without a job file the process stays
 not-ready.";
@@ -79,6 +85,14 @@ fn main() {
                 process::exit(1);
             }
         }
+        Some("replay") => match cmd_replay(args) {
+            Ok(true) => {}
+            Ok(false) => process::exit(1),
+            Err(error) => {
+                eprintln!("kako: {error}");
+                process::exit(1);
+            }
+        },
         Some("serve") => {
             if let Err(error) = cmd_serve(args) {
                 eprintln!("kako: {error}");
@@ -183,6 +197,51 @@ fn cmd_preview(args: impl Iterator<Item = String>) -> Result<(), String> {
     let preview = kako::run::preview_job(&job, &config, rows).map_err(|error| error.to_string())?;
     println!("{}", preview.to_json()?);
     Ok(())
+}
+
+/// `Ok(false)` when the replay did not reproduce; the report says why.
+fn cmd_replay(args: impl Iterator<Item = String>) -> Result<bool, String> {
+    let mut replay_file: Option<PathBuf> = None;
+    let mut output = PathBuf::from("out");
+    let mut check_only = false;
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--output" | "-o" => {
+                let dir = args
+                    .next()
+                    .ok_or_else(|| "missing value for --output".to_string())?;
+                output = PathBuf::from(dir);
+            }
+            "--check" => check_only = true,
+            s if s.starts_with('-') => return Err(format!("unknown flag `{s}`")),
+            s => {
+                if replay_file.is_some() {
+                    return Err("multiple replay files".into());
+                }
+                replay_file = Some(PathBuf::from(s));
+            }
+        }
+    }
+    let replay_file = replay_file.ok_or_else(|| "missing replay file".to_string())?;
+    let replay = kako::replay::load(&replay_file).map_err(|error| error.to_string())?;
+    if check_only {
+        let refused = kako::replay::check(&replay);
+        for (step, problems) in &refused {
+            for problem in problems {
+                println!("{step}: {problem}");
+            }
+        }
+        if refused.is_empty() {
+            println!("{}: reproducible", replay.id());
+        }
+        return Ok(refused.is_empty());
+    }
+    let config = kako::run::RunnerConfig::for_current_exe(std::env::temp_dir())
+        .map_err(|error| error.to_string())?;
+    let report = kako::replay::run(&replay, &output, &config).map_err(|error| error.to_string())?;
+    println!("{}", kako::replay::report_path(&replay, &output).display());
+    Ok(report.reproducible)
 }
 
 fn cmd_serve(args: impl Iterator<Item = String>) -> Result<(), String> {

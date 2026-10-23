@@ -147,6 +147,17 @@ fn execute_in_current_dir(
         write_preview(&conn, &scratch_abs, sample)?;
     }
     engine_step("version");
+    engine_version(&conn)
+}
+
+/// `duckdb <version>` of the linked library, as receipts spell it. Replay
+/// checks a pinned engine against this before running anything.
+pub fn version() -> Result<String, String> {
+    let conn = Connection::open_in_memory().map_err(|error| format!("duckdb open: {error}"))?;
+    engine_version(&conn)
+}
+
+fn engine_version(conn: &Connection) -> Result<String, String> {
     let version: String = conn
         .query_row("SELECT version()", [], |row| row.get(0))
         .map_err(|error| format!("duckdb version: {error}"))?;

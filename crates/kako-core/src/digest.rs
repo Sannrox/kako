@@ -19,13 +19,16 @@ pub fn hash_bytes(bytes: &[u8]) -> Digest {
 /// beyond what `File::open` does.
 pub fn hash_file(path: &Path) -> Result<Digest, String> {
     let file = File::open(path).map_err(|error| format!("{}: {error}", path.display()))?;
-    let mut reader = BufReader::new(file);
+    hash_reader(file).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+/// Digest of everything `reader` yields.
+pub fn hash_reader(reader: impl Read) -> std::io::Result<Digest> {
+    let mut reader = BufReader::new(reader);
     let mut hasher = Sha256::new();
     let mut buf = [0_u8; 64 * 1024];
     loop {
-        let n = reader
-            .read(&mut buf)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
+        let n = reader.read(&mut buf)?;
         if n == 0 {
             break;
         }

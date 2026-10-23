@@ -19,5 +19,6 @@ Decisions that must outlive a single PR.
 | [0013](0013-job-scoped-credentials.md) | Job-scoped credentials stay in the runner process | Accepted |
 | [0014](0014-job-markings.md) | Markings are opaque labels the job source attaches | Accepted |
 | [0015](0015-job-encryption.md) | Job keys stay in the runner; outputs seal after the worker | Accepted |
+| [0016](0016-replay-jobs.md) | Replays run pinned steps into a branch and never substitute a pin | Accepted |
 
 Template: short context, decision, consequences, rejected alternatives.

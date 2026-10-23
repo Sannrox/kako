@@ -2,8 +2,8 @@
 
 use std::path::Path;
 
-use kako_core::WriteMode;
 use kako_core::manifest::read_manifest;
+use kako_core::{Engine, WriteMode};
 
 #[cfg(test)]
 mod ceiling;
@@ -41,10 +41,20 @@ pub fn execute_in_scratch(scratch: &Path) -> Result<String, String> {
     }
 }
 
+/// Version a SQL engine reports on receipts, read without running a job.
+/// `None` for Python: its version depends on the runtime image, so read it
+/// with `kako_engine_python::engine_version` for the selected image.
+pub fn sql_engine_version(engine: Engine) -> Option<Result<String, String>> {
+    match engine {
+        Engine::DuckDbSql => Some(kako_engine_duckdb::version()),
+        Engine::Mizuchi => Some(Ok(kako_engine_mizuchi::version())),
+        Engine::Python => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kako_core::Engine;
     use kako_core::Input;
     use kako_core::manifest::write_manifest;
     use kako_core::stage::Scratch;
@@ -87,7 +97,10 @@ mod tests {
         )
         .unwrap();
         let version = execute_in_scratch(scratch.path()).unwrap();
-        assert!(version.starts_with("duckdb "), "{version}");
+        assert_eq!(
+            Some(version),
+            sql_engine_version(Engine::DuckDbSql).map(Result::unwrap)
+        );
         assert!(scratch.outputs_dir().join("one.csv").is_file());
     }
 

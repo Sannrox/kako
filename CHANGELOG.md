@@ -8,6 +8,14 @@ uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `kako replay` re-runs a pipeline's steps at pinned input, code, engine
+  and Python runtime image versions into a branch directory. It checks
+  every pin before anything runs, reports each step that cannot be
+  reproduced instead of substituting a version, refuses `main`, and
+  writes per-step receipts plus `replay.json` with `reproduced` or
+  `diverged` output digests
+  ([ADR 0016](docs/decisions/0016-replay-jobs.md),
+  [#53](https://github.com/Sannrox/kako/issues/53)).
 - Sekai adapter live claim transport over the published runtime-claim
   client. Input snapshots page to exhaustion, cap retained row/cell/byte
   size, and renew the claim lease after each non-empty page. The live

@@ -118,29 +118,8 @@ impl JobSource for LocalSource {
         outputs: &[Output],
         receipt: &Receipt,
     ) -> Result<(), Self::Error> {
-        fs::create_dir_all(&self.output_dir).map_err(|error| {
-            LocalError(format!(
-                "create output dir {}: {error}",
-                self.output_dir.display()
-            ))
-        })?;
-        for output in outputs {
-            let dest = self.output_dir.join(&output.name);
-            if dest.parent() != Some(self.output_dir.as_path()) {
-                return Err(LocalError(format!(
-                    "output `{}` must be a file name in the output directory",
-                    output.name
-                )));
-            }
-            copy_regular_file(&output.path, &dest, &self.output_dir)?;
-        }
-        let json = receipt::to_json(receipt).map_err(LocalError)?;
-        let receipt_path = self.output_dir.join("receipt.json");
-        reject_symlink(&receipt_path)?;
-        fs::write(&receipt_path, json)?;
-        let _ = fs::remove_file(self.output_dir.join("failure.txt"));
         let _ = job;
-        Ok(())
+        write_completion(&self.output_dir, outputs, receipt)
     }
 
     fn fail(&mut self, job: &Job, failure: &Failure) -> Result<(), Self::Error> {
@@ -175,6 +154,37 @@ impl JobSource for LocalSource {
         self.job = Some(job.clone());
         Ok(())
     }
+}
+
+/// Copy outputs into `output_dir`, write `receipt.json`, and drop a stale
+/// `failure.txt`. Shared by `kako run` and each replay step.
+pub(crate) fn write_completion(
+    output_dir: &Path,
+    outputs: &[Output],
+    receipt: &Receipt,
+) -> Result<(), LocalError> {
+    fs::create_dir_all(output_dir).map_err(|error| {
+        LocalError(format!(
+            "create output dir {}: {error}",
+            output_dir.display()
+        ))
+    })?;
+    for output in outputs {
+        let dest = output_dir.join(&output.name);
+        if dest.parent() != Some(output_dir) {
+            return Err(LocalError(format!(
+                "output `{}` must be a file name in the output directory",
+                output.name
+            )));
+        }
+        copy_regular_file(&output.path, &dest, output_dir)?;
+    }
+    let json = receipt::to_json(receipt).map_err(LocalError)?;
+    let receipt_path = output_dir.join("receipt.json");
+    reject_symlink(&receipt_path)?;
+    fs::write(&receipt_path, json)?;
+    let _ = fs::remove_file(output_dir.join("failure.txt"));
+    Ok(())
 }
 
 fn revoked_receipt(job: &Job, dek_id: &str, kek_id: &str) -> Receipt {

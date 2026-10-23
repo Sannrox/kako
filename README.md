@@ -46,6 +46,8 @@ kako run job.json --tenant local --namespace default
 kako run job.json --require-identity
 kako validate job.json
 kako preview job.json --rows 100
+kako replay replay.json --output ./out
+kako replay replay.json --check
 kako serve --listen <addr>
 kako serve --listen <addr> job.json --output ./out
 kako serve --listen <addr> --hand-back
@@ -115,6 +117,49 @@ scan of a staged file under `inputs/` is refused rather than read past the
 sample. Neither command writes an output directory or calls a job source,
 and the scratch tree is removed. Both refuse other engines and encrypted
 jobs, whose sealed outputs must not leave as plaintext rows.
+
+`kako replay` re-runs a pipeline's steps exactly as an earlier run did,
+into an isolated branch ([ADR 0016](docs/decisions/0016-replay-jobs.md)):
+
+```json
+{
+  "id": "replay-7",
+  "branch": "replay/7",
+  "steps": [
+    {
+      "id": "totals",
+      "job": "totals.json",
+      "pins": {
+        "inputs": {"orders": "sha256:…"},
+        "code": "sha256:…",
+        "engine_version": "duckdb 1.4.5",
+        "outputs": {"totals.csv": "sha256:…"}
+      }
+    }
+  ]
+}
+```
+
+Pins come from the original receipts: each input digest, the code digest
+(the transform version), and the engine version. A Python step's job must
+pin `runtime_image`. `outputs` is optional and holds the original output
+digests. Before anything runs, every step is checked. A changed input or
+code, or an engine or runtime image this runner does not have, makes the
+step not reproducible. The replay then runs nothing and reports every such
+step. It never substitutes another version. Otherwise the steps run in
+order. Each step writes its outputs and receipt to
+`<output>/<branch>/<step>/`, with `/` in the branch written as `%2F`
+(`replay%2F7/totals/`). The run is re-checked against the pins, and one
+replay at a time holds a branch.
+`replay.json` in the branch directory says `"complete": false` while the
+replay runs, so an interrupted rerun never reads as an earlier success.
+When complete, it gives each step's status:
+`reproduced`, `diverged` (an output digest differs from its pin), `ran`
+(no output pins), `not_reproducible`, `failed`, or `skipped`. The branch
+may not be `main` or `master`, and no part of its directory may be a
+link. `--check` only reports. Steps do not feed
+each other: the job source stages every step's inputs at their pinned
+versions. Computing diffs is the job source's job.
 
 `kako serve` claims from the job source, serves `GET /health`, `GET /ready`,
 and `GET /version`, and drains on SIGTERM: readiness goes false immediately,
