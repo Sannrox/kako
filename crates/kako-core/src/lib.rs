@@ -17,6 +17,7 @@ pub mod manifest;
 pub mod marking;
 pub mod receipt;
 pub mod stage;
+pub mod streaming;
 
 pub use isolation::IsolationTier;
 pub use marking::{ColumnMarking, DeclassifyDecision};
