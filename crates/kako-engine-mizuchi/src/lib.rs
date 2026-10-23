@@ -12,6 +12,11 @@ use mizuchi::{
 use kako_core::manifest::StagedInput;
 use kako_core::{Lineage, LineageRead, LineageWrite, WriteMode};
 
+/// `mizuchi <version>` of the linked engine, as receipts spell it.
+pub fn version() -> String {
+    format!("mizuchi {VERSION}")
+}
+
 /// Run staged SQL through mizuchi. Returns `mizuchi <version>`.
 pub fn execute(
     sql: &str,
@@ -111,7 +116,7 @@ fn execute_with(
         commit_id: format!("{mode}:{rows}:{bytes}:"),
     });
     write_lineage(scratch, &lineage)?;
-    Ok(format!("mizuchi {VERSION}"))
+    Ok(version())
 }
 
 fn register_input(session: &mut Session, name: &str, path: &Path) -> Result<(), String> {

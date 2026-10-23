@@ -297,6 +297,35 @@ fn push_python_root(roots: &mut Vec<PathBuf>, path: &Path) {
     roots.push(canon);
 }
 
+/// Engine version a run on `image` would report, read without running user
+/// code. Spelled exactly as `kako_run.py` prints it; keep the two in sync.
+pub fn engine_version(image: &PythonImage) -> Result<String, String> {
+    let interpreter = resolve_interpreter()?;
+    let mut command = Command::new(&interpreter);
+    command
+        .arg("-c")
+        .arg("import sys, polars as pl; print(f\"python {sys.version.split()[0]} polars {pl.__version__}\")")
+        .env_clear()
+        .env("PYTHONNOUSERSITE", "1")
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("PYTHONUTF8", "1");
+    if let Some(site) = &image.site_packages {
+        command.env("PYTHONPATH", site);
+    }
+    let output = command
+        .output()
+        .map_err(|error| format!("spawn python: {error}"))?;
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || version.is_empty() {
+        return Err(format!(
+            "python: version probe exited {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(version)
+}
+
 /// Write user source plus the wrapper and exec the interpreter in scratch.
 pub fn execute(
     code: &str,
@@ -457,6 +486,21 @@ mod tests {
                 || err.contains("not a python"),
             "{err}"
         );
+    }
+
+    #[test]
+    fn engine_version_matches_what_a_run_reports() {
+        if skip_without_python().is_none() {
+            return;
+        }
+        let code = r#"
+def transform(inputs):
+    import polars as pl
+    return {"totals.csv": pl.DataFrame({"x": [1]})}
+"#;
+        let (ran, _) = run_python_code(code);
+        let image = ImageCatalog::from_env().select(None).unwrap();
+        assert_eq!(engine_version(&image).unwrap(), ran);
     }
 
     #[test]
