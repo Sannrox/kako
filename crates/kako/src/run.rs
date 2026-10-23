@@ -247,6 +247,21 @@ fn execute(
             hash_file(&staged_path).map_err(Failure::Runner)?,
         ));
     }
+    // A scoring job runs only the artifact its descriptor signs: the staged
+    // copy is checked, not only the source file the job was loaded from.
+    if let Some(model) = &job.model {
+        let staged = input_digests
+            .iter()
+            .find(|(name, _)| name == crate::scoring::MODEL_INPUT)
+            .map(|(_, digest)| digest.0.as_str());
+        if staged != Some(model.artifact_digest.as_str()) {
+            return Err(Failure::Job(format!(
+                "artifact digest mismatch: the descriptor signs {}, the staged model is {}",
+                model.artifact_digest,
+                staged.unwrap_or("missing")
+            )));
+        }
+    }
     let code_digest = hash_bytes(job.code.as_bytes());
     if job.engine != crate::Engine::Mizuchi {
         kako_core::marking::refuse_under_marked(job, &kako_core::marking::input_union(job))
@@ -353,6 +368,7 @@ fn execute(
             .map(|claim| vec![claim.dek_id.clone(), claim.kek_id.clone()])
             .unwrap_or_default(),
         key_state: job.encryption.as_ref().map(|_| "ready".to_string()),
+        model: job.model.clone(),
     };
     Ok(CompletedRun {
         outputs,
@@ -516,6 +532,7 @@ mod tests {
             output_markings: Default::default(),
             declassify: None,
             encryption: None,
+            model: None,
         };
         let mut source = Fake {
             jobs: vec![job],
@@ -567,6 +584,7 @@ mod tests {
             output_markings: Default::default(),
             declassify: None,
             encryption: None,
+            model: None,
         };
         let mut source = Fake {
             jobs: vec![job],
@@ -623,6 +641,7 @@ mod tests {
                 reason: "public aggregate".into(),
             }),
             encryption: None,
+            model: None,
         };
         let mut source = Fake {
             jobs: vec![job],
@@ -669,6 +688,7 @@ mod tests {
             output_markings: Default::default(),
             declassify: None,
             encryption: None,
+            model: None,
         };
         match execute_job(
             &job,
@@ -713,6 +733,7 @@ mod tests {
             output_markings: Default::default(),
             declassify: None,
             encryption: None,
+            model: None,
         };
         match execute_job(
             &job,
@@ -750,6 +771,7 @@ mod tests {
             output_markings: Default::default(),
             declassify: None,
             encryption: None,
+            model: None,
         };
         let mut source = Fake {
             jobs: vec![job],
@@ -804,6 +826,7 @@ mod tests {
             output_markings: Default::default(),
             declassify: None,
             encryption: None,
+            model: None,
         }
     }
 
@@ -832,6 +855,7 @@ mod tests {
             output_markings: Default::default(),
             declassify: None,
             encryption: None,
+            model: None,
         }
     }
 
@@ -1077,6 +1101,7 @@ mod tests {
             output_markings: Default::default(),
             declassify: None,
             encryption: Some(claim),
+            model: None,
         }
     }
 

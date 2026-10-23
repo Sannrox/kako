@@ -23,6 +23,7 @@ pub mod local;
 pub mod pool;
 pub mod replay;
 pub mod run;
+pub mod scoring;
 
 #[cfg(feature = "sekai")]
 pub use kako_source_sekai as sekai_source;

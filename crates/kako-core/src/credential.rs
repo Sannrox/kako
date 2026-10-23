@@ -110,6 +110,7 @@ mod tests {
             output_markings: Default::default(),
             declassify: None,
             encryption: None,
+            model: None,
         }
     }
 

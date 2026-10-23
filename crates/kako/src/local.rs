@@ -60,6 +60,18 @@ struct JobFile {
     runtime_image: Option<String>,
     isolation: Option<String>,
     write_mode: Option<String>,
+    /// A batch scoring job from a registry descriptor ([`crate::scoring`]).
+    scoring: Option<ScoringFile>,
+}
+
+/// Paths, relative to the job file, of a scoring job's signed batch
+/// descriptor, the registry keys it trusts, and the model artifact.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScoringFile {
+    descriptor: String,
+    trusted_keys: String,
+    artifact: String,
 }
 
 /// Identity the local source applies when a job file omits tenant/namespace.
@@ -209,6 +221,7 @@ fn revoked_receipt(job: &Job, dek_id: &str, kek_id: &str) -> Receipt {
         declassify: None,
         key_ids: vec![dek_id.to_string(), kek_id.to_string()],
         key_state: Some("revoked".into()),
+        model: None,
     }
 }
 
@@ -294,7 +307,17 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
         .map_err(|error| LocalError(format!("parse {}: {error}", path.display())))?;
     let (tenant_id, namespace) = resolve_identity(&parsed, identity)?;
     let base = path.parent().unwrap_or_else(|| Path::new("."));
-    let engine = match parsed.engine.as_deref().unwrap_or("duckdb_sql") {
+    let default_engine = if parsed.scoring.is_some() {
+        "python"
+    } else {
+        "duckdb_sql"
+    };
+    let engine = match parsed.engine.as_deref().unwrap_or(default_engine) {
+        _ if parsed.scoring.is_some()
+            && parsed.engine.as_deref().is_some_and(|e| e != "python") =>
+        {
+            return Err(LocalError("a scoring job runs on the python engine".into()));
+        }
         "duckdb_sql" | "sql" => Engine::DuckDbSql,
         "mizuchi" => Engine::Mizuchi,
         "python" => Engine::Python,
@@ -304,7 +327,15 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
             )));
         }
     };
-    let code = job_code(&parsed, engine)?;
+    let mut code = match &parsed.scoring {
+        Some(_) if parsed.code.is_some() || parsed.sql.is_some() => {
+            return Err(LocalError(
+                "a scoring job's program comes from its descriptor; drop `code` and `sql`".into(),
+            ));
+        }
+        Some(_) => String::new(),
+        None => job_code(&parsed, engine)?,
+    };
     let id = parsed.id.unwrap_or_else(|| {
         path.file_stem()
             .and_then(|s| s.to_str())
@@ -347,6 +378,67 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
             markings,
             column_markings,
         });
+    }
+    let mut model = None;
+    if let Some(spec) = &parsed.scoring {
+        let ([data], [output]) = (inputs.as_slice(), parsed.outputs.as_slice()) else {
+            return Err(LocalError(
+                "a scoring job scores one input into one output".into(),
+            ));
+        };
+        if data.name == crate::scoring::MODEL_INPUT {
+            return Err(LocalError(format!(
+                "input name `{}` is the scoring job's model",
+                crate::scoring::MODEL_INPUT
+            )));
+        }
+        let path = |what: &str, rel: &str| {
+            if relative_leaf(rel) {
+                Ok(base.join(rel))
+            } else {
+                Err(LocalError(format!(
+                    "scoring {what} path must be relative to the job file"
+                )))
+            }
+        };
+        // The runner passes a staged `.onnx` input as a path, not a frame.
+        if !spec.artifact.ends_with(".onnx") {
+            return Err(LocalError(
+                "a scoring job's artifact must be an `.onnx` file".into(),
+            ));
+        }
+        let artifact = path("artifact", &spec.artifact)?;
+        let scoring = crate::scoring::prepare(
+            &path("descriptor", &spec.descriptor)?,
+            &path("trusted_keys", &spec.trusted_keys)?,
+            &artifact,
+            &data.name,
+            output,
+        )
+        .map_err(LocalError)?;
+        code = scoring.code;
+        // Labels declared for the model follow it like any input's.
+        inputs.push(Input {
+            name: crate::scoring::MODEL_INPUT.into(),
+            path: artifact,
+            markings: kako_core::marking::normalize(
+                parsed
+                    .input_markings
+                    .get(crate::scoring::MODEL_INPUT)
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
+            column_markings: Default::default(),
+        });
+        if parsed
+            .input_column_markings
+            .contains_key(crate::scoring::MODEL_INPUT)
+        {
+            return Err(LocalError(
+                "the scoring model has no columns to mark".into(),
+            ));
+        }
+        model = Some(scoring.model);
     }
     let mut seen_outputs = HashSet::new();
     for output in &parsed.outputs {
@@ -411,7 +503,8 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
         output_markings.insert(name, kako_core::marking::normalize(labels));
     }
     for name in parsed.input_markings.keys() {
-        if !parsed.inputs.contains_key(name) {
+        let scoring_model = parsed.scoring.is_some() && name == crate::scoring::MODEL_INPUT;
+        if !parsed.inputs.contains_key(name) && !scoring_model {
             return Err(LocalError(format!(
                 "input_markings names unknown input `{name}`"
             )));
@@ -453,6 +546,7 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
         output_markings,
         declassify,
         encryption: None,
+        model,
     })
 }
 
@@ -793,6 +887,7 @@ mod tests {
             output_markings: Default::default(),
             declassify: None,
             encryption: None,
+            model: None,
         };
         let outputs = vec![Output {
             name: "nested/out.csv".into(),
@@ -820,6 +915,7 @@ mod tests {
             declassify: None,
             key_ids: Vec::new(),
             key_state: None,
+            model: None,
         };
         let err = source.complete(&job, &outputs, &receipt).unwrap_err();
         assert!(err.0.contains("file name"), "{err}");
@@ -1047,6 +1143,7 @@ mod tests {
             declassify: None,
             key_ids: Vec::new(),
             key_state: None,
+            model: None,
         };
         source.complete(&job, &outputs, &receipt).unwrap();
         let json = fs::read_to_string(out.join("receipt.json")).unwrap();

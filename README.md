@@ -189,7 +189,7 @@ the sandbox reports them.
   stay the same.
 - **Python** opt-in: set `"engine": "python"` and `"code"` with
   `def transform(inputs)` returning output frames. Packages (Polars, pandas,
-  pyarrow, DuckDB) come from the hashed lockfile in `runtime/python/`; user
+  pyarrow, DuckDB, ONNX Runtime) come from the hashed lockfile in `runtime/python/`; user
   code has no network. Jobs may pin `runtime_image` to that lockfile
   digest so a later default-image upgrade does not change output
   ([ADR 0006](docs/decisions/0006-python-package-policy.md)). Receipts
@@ -198,6 +198,12 @@ the sandbox reports them.
   `PATH`. CI sets `KAKO_REQUIRE_PYTHON=1` so Python engine tests fail
   instead of skip, delegates a cgroup subtree for memory jobs, and
   builds the runtime image from the lockfile.
+
+- **Scoring** from a model registry: a job with a `scoring` section names a
+  signed batch descriptor, the registry keys it trusts and the `.onnx`
+  artifact. Kako verifies the signatures and the artifact digest, then
+  scores the one input with ONNX Runtime in the Python sandbox. The receipt
+  records the model version ([scoring](docs/scoring.md)).
 
 Adding or switching an engine is opt-in behind the bar in
 [docs/engine-requirements.md](docs/engine-requirements.md)
@@ -230,6 +236,8 @@ Every run produces a receipt with:
 - the digest of the code;
 - the engine and its version;
 - `runtime_image` for Python jobs (pinned lockfile digest);
+- `model` for scoring jobs: the registry model version, artifact digest
+  and descriptor that scored the input;
 - the digest of each output;
 - start time and duration.
 
