@@ -43,3 +43,9 @@ ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 base64 = "0.22"
 libc = "0.2"
 tempfile = "3"
+
+# Dependencies build without debug info in dev and test builds: backtraces
+# and debuggers keep full detail for workspace crates, and build directories
+# stay a fraction of the size.
+[profile.dev.package."*"]
+debug = false
