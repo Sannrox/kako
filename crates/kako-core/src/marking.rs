@@ -160,8 +160,6 @@ pub fn joined(entries: &[(String, Vec<String>)]) -> String {
 
 /// Job-file maps keyed by input or output name.
 pub type LabelMap = BTreeMap<String, Vec<String>>;
-/// Job-file maps keyed by input name then column.
-pub type ColumnLabelMap = BTreeMap<String, BTreeMap<String, Vec<String>>>;
 
 #[cfg(test)]
 mod tests {
