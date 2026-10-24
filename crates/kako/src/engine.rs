@@ -1,6 +1,3 @@
-//! Worker manifest helpers used by the parent run loop and the child dispatcher.
+//! In-process worker dispatch used by engine-bar tests and `--internal-execute`.
 
-pub use kako_core::manifest::{
-    Manifest, StagedInput, write_manifest, write_manifest_from_job, write_manifest_with,
-};
 pub use kako_worker::execute_in_scratch;

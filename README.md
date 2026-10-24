@@ -4,11 +4,12 @@ A sandboxed data-transform runner. kako takes a job (SQL or Python plus input
 datasets), runs it in an isolated, short-lived child process, and returns the
 outputs together with a receipt describing exactly what ran.
 
-> Status: SQL MVP plus opt-in Python. Local jobs run DuckDB (default) or
-> Python in a [kekkai](https://github.com/Sannrox/kekkai) sandbox and write
-> outputs plus a receipt. `kako serve` runs a pool process with health,
-> drain, and rollback onto the previous GitHub Release. The optional Sekai
-> adapter claims isolated-process work; live plane proof is a later issue.
+> Status: SQL MVP plus opt-in Python. Local jobs run DuckDB (default),
+> opt-in mizuchi, or Python in a [kekkai](https://github.com/Sannrox/kekkai)
+> sandbox and write outputs plus a receipt. `kako serve` runs a pool process
+> with health, drain, and rollback onto the previous GitHub Release. The
+> optional Sekai adapter claims isolated-process work over the published
+> runtime-claim client.
 > See [ADR 0002](docs/decisions/0002-sandboxed-transform-runner.md),
 > [ADR 0005](docs/decisions/0005-python-runtime-image.md),
 > [ADR 0006](docs/decisions/0006-python-package-policy.md),

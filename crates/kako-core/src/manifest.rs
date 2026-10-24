@@ -60,19 +60,16 @@ pub fn write_manifest(
     inputs: &[(String, PathBuf)],
     outputs: &[String],
 ) -> Result<(), String> {
-    write_manifest_with(scratch, engine, sql, inputs, outputs, WriteMode::Overwrite)
-}
-
-/// Write the worker manifest, including the mizuchi output commit mode.
-pub fn write_manifest_with(
-    scratch: &Path,
-    engine: Engine,
-    sql: &str,
-    inputs: &[(String, PathBuf)],
-    outputs: &[String],
-    write_mode: WriteMode,
-) -> Result<(), String> {
-    write_manifest_inputs(scratch, engine, sql, inputs, &[], outputs, write_mode, None)
+    write_manifest_inputs(
+        scratch,
+        engine,
+        sql,
+        inputs,
+        &[],
+        outputs,
+        WriteMode::Overwrite,
+        None,
+    )
 }
 
 /// Write the worker manifest, copying marking labels from `job`.
