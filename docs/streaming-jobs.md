@@ -45,7 +45,7 @@ A streaming job (`kako.streaming-job/v1`, #64,
 Validation refuses any other shape by name and never runs it as a batch
 job: another source kind, a dataset or other sink, a missing plan, a
 partition listed twice or a start offset for a partition the job does not
-own. Running a streaming job is a separate issue.
+own.
 
 ## Runner
 
@@ -101,3 +101,25 @@ stays bounded by the job's partitions.
 
 The topic trait's `head` gives the source head. The counters start at zero
 for each worker.
+
+## v1 acceptance coverage
+
+The parent streaming job in #52 is delivered by #63 (ADR 0017), #64 (job
+kind), #65 (fenced runner, kill-and-restart, duplicate fence), #66
+(metrics), and #75 (topic, plane, and plan adapters). Dataset sinks,
+rescale, and extra source kinds stay out of v1. 24-hour soak evidence
+(#88) does not block v1.
+
+| Capability | Evidence |
+| --- | --- |
+| Job kind, checkpoint key, resume from the receipt | [ADR 0017](decisions/0017-streaming-checkpoints.md), [`StreamingJobSpec`](../crates/kako-core/src/streaming.rs) |
+| One topic source, one object sink | spec above; validation refuses any other shape |
+| Heartbeat, fenced object apply, restart exactly-once | [`StreamingRunner`](../crates/kako-source-sekai/src/streaming.rs) |
+| Duplicate runner fenced | `a_stale_worker_is_fenced_and_its_apply_refused` |
+| Lag, throughput, checkpoint age | `StreamingMetrics` above |
+| Topic, plane, and mizuchi plan adapters | [`streaming_topic.rs`](../crates/kako-source-sekai/src/streaming_topic.rs), [`streaming_plane.rs`](../crates/kako-source-sekai/src/streaming_plane.rs), [`MizuchiBatchPlan`](../crates/kako-engine-mizuchi/src/streaming.rs) |
+
+These checks prove the runner against in-process fakes and the shipped
+adapters. They do not replace a 24-hour soak (#88). Quotas for
+long-running claims stay with the job source
+([ADR 0004](decisions/0004-quota-authority.md)).

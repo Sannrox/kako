@@ -4,12 +4,16 @@ A sandboxed data-transform runner. kako takes a job (SQL or Python plus input
 datasets), runs it in an isolated, short-lived child process, and returns the
 outputs together with a receipt describing exactly what ran.
 
-> Status: SQL MVP plus opt-in Python. Local jobs run DuckDB (default),
-> opt-in mizuchi, or Python in a [kekkai](https://github.com/Sannrox/kekkai)
-> sandbox and write outputs plus a receipt. `kako serve` runs a pool process
-> with health, drain, and rollback onto the previous GitHub Release. The
-> optional Sekai adapter claims isolated-process work over the published
-> runtime-claim client.
+> Status: SQL MVP plus opt-in Python, and streaming jobs v1. Local jobs run
+> DuckDB (default), opt-in mizuchi, or Python in a
+> [kekkai](https://github.com/Sannrox/kekkai) sandbox and write outputs plus
+> a receipt. Streaming jobs (`kako.streaming-job/v1`) read a partitioned
+> topic, run a mizuchi plan, and apply objects with checkpoints tied to
+> receipts ([streaming-jobs.md](docs/streaming-jobs.md),
+> [ADR 0017](docs/decisions/0017-streaming-checkpoints.md)). `kako serve`
+> runs a pool process with health, drain, and rollback onto the previous
+> GitHub Release. The optional Sekai adapter claims isolated-process work
+> over the published runtime-claim client.
 > See [ADR 0002](docs/decisions/0002-sandboxed-transform-runner.md),
 > [ADR 0005](docs/decisions/0005-python-runtime-image.md),
 > [ADR 0006](docs/decisions/0006-python-package-policy.md),
@@ -225,7 +229,9 @@ to retry; kako only executes.
   `kako-source-sekai` adapter (`sekai` feature on `kako`) claims isolated-process
   transform runs from the control plane. Fence loss aborts write-back. Drain
   can hand a claim back without writing. Live proof against a plane is a later
-  issue; this crate's default tests use a fake claim client.
+  issue; this crate's default tests use a fake claim client. The same crate
+  runs streaming jobs under the claim fence
+  ([streaming-jobs.md](docs/streaming-jobs.md)).
 
 ## Receipts
 
