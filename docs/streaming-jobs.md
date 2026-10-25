@@ -58,7 +58,8 @@ a time:
 3. Rewind the plan to the batch start, then run it.
 4. Apply the edits through the plane with the checkpoint key and the batch
    end.
-5. Commit the consumer group to the end the receipt names.
+5. Persist plan state at the receipt end, then commit the consumer group
+   to that end.
 
 A restart resumes from the group offset, or from the spec's start offset
 when the group has none. It replays forward: a replayed checkpoint returns
@@ -68,8 +69,21 @@ whose fence is no longer current stops at its next heartbeat or apply.
 
 A windowed plan must restore its state to the batch start on every rewind,
 from durable state after a restart. Topic, consumer group, plane and plan
-are traits. The live topic client, the plane transport and the mizuchi plan
-adapter plug in there.
+are traits. The live adapters that plug in there (#75):
+
+- `TopicLog` / `TopicGroup`: a Kafka-compatible partitioned log. Offsets
+  are integers, a consumer group stores committed offsets next to the
+  topic, and a restart resumes from that position.
+- `LiveStreamingPlane`: heartbeats the claim and applies a batch through
+  `ApplyStreamingTransformBatch` (or a local client with the same
+  semantics). The call carries the claim fence.
+- `MizuchiBatchPlan`: runs the spec's streaming plan and snapshots window
+  state at the receipt end so `rewind` restores committed state after a
+  restart. A batch the plane then answers as a replay does not replace
+  that snapshot. Complete output is refused: the streaming apply uses
+  one mutation action. Group column names `window_start`, `window_end`,
+  `count`, and `sum` are reserved. Object IDs percent-encode group
+  values so they stay whitespace-free.
 
 ## Metrics
 

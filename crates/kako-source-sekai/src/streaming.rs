@@ -8,7 +8,8 @@
 //! 3. run the plan over it, giving object edits;
 //! 4. apply the edits through the plane with the checkpoint key
 //!    `<topic>/<partition>@<start>` and the batch's end position;
-//! 5. commit the consumer group to the end the receipt names.
+//! 5. persist plan state at the receipt end, then commit the consumer
+//!    group to that end.
 //!
 //! The plane commits first and the group after (rule 5), and a replayed key
 //! returns the original receipt, whose end decides where reading continues
@@ -17,8 +18,9 @@
 //! fresh. A worker whose fence is no longer current is refused by the plane
 //! and stops.
 //!
-//! Topic, group and plane are traits: the live topic client and the plane
-//! transport plug in here.
+//! Topic, group and plane are traits: [`crate::TopicLog`],
+//! [`crate::LiveStreamingPlane`], and the mizuchi plan adapter plug in
+//! here.
 //!
 //! The runner keeps [`StreamingMetrics`] per partition (#66): lag behind the
 //! source head, records and batches applied, and checkpoint age.
@@ -28,27 +30,13 @@ use std::fmt::Write as _;
 use std::time::Instant;
 
 use kako_core::streaming::StreamingJobSpec;
+pub use kako_core::streaming::{BatchPlan, ObjectEdit, Record};
 
 use crate::{Fence, SekaiSourceError};
 
-/// One record of a partition.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Record {
-    pub offset: u64,
-    pub payload: Vec<u8>,
-}
-
-/// One object edit, as the plane's streaming apply takes it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ObjectEdit {
-    pub object_id: String,
-    pub name: String,
-    pub properties: BTreeMap<String, String>,
-}
-
 /// Where a batch ends: `source` is `<topic>/<partition>`, `position` the end
 /// offset, exclusive.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct InputPosition {
     pub source: String,
     pub position: String,
@@ -56,7 +44,7 @@ pub struct InputPosition {
 
 /// The plane's answer to one apply. `replay` is true when the checkpoint was
 /// applied before; the positions are then the original batch's.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ApplyReceipt {
     pub checkpoint: String,
     pub input_positions: Vec<InputPosition>,
@@ -92,20 +80,6 @@ pub trait StreamingPlane {
         input_positions: &[InputPosition],
         edits: &[ObjectEdit],
     ) -> Result<ApplyReceipt, SekaiSourceError>;
-}
-
-/// The job's streaming plan, run over one batch at a time.
-///
-/// A windowed plan keeps state across batches, so its state must follow
-/// what the plane committed, not what the plan last saw: a batch the plane
-/// then answers as a replay may end earlier than the one the plan ran.
-/// Before every batch the runner calls [`BatchPlan::rewind`] with the
-/// batch's start, and the plan must restore its state to exactly the
-/// records before that offset, from durable state when the worker
-/// restarted.
-pub trait BatchPlan {
-    fn rewind(&mut self, partition: u32, start: u64) -> Result<(), String>;
-    fn edits(&mut self, partition: u32, records: &[Record]) -> Result<Vec<ObjectEdit>, String>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -367,6 +341,26 @@ where
             metrics.records_applied += records.len() as u64;
             metrics.batches_applied += 1;
         }
+        // Plan state follows the receipt. A replay (or a crash after apply
+        // before persist) may name a different end than this attempt read.
+        if next != end {
+            self.plan
+                .rewind(partition, start)
+                .map_err(StreamError::Plan)?;
+            let prefix = self.records_through(partition, start, next, &records)?;
+            self.require_retained(partition, start)?;
+            if prefix.is_empty() {
+                return Err(StreamError::ReceiptMismatch(format!(
+                    "receipt end {next} is not in the batch from {start}"
+                )));
+            }
+            self.plan
+                .edits(partition, &prefix)
+                .map_err(StreamError::Plan)?;
+        }
+        self.plan
+            .persist(partition, next)
+            .map_err(StreamError::Plan)?;
         self.group
             .commit(partition, next)
             .map_err(StreamError::Group)?;
@@ -374,6 +368,50 @@ where
         metrics.last_checkpoint = Some(Instant::now());
         metrics.lag = head.map(|head| head.saturating_sub(next));
         Ok(Some(next))
+    }
+
+    /// Records in `[start, end)`: the current batch if it already covers
+    /// that range, otherwise by reading through the receipt end.
+    fn records_through(
+        &mut self,
+        partition: u32,
+        start: u64,
+        end: u64,
+        records: &[Record],
+    ) -> Result<Vec<Record>, StreamError> {
+        let last = records
+            .last()
+            .map(|record| record.offset + 1)
+            .unwrap_or(start);
+        if end <= last {
+            return Ok(records
+                .iter()
+                .filter(|record| record.offset < end)
+                .cloned()
+                .collect());
+        }
+        let mut prefix = records.to_vec();
+        let mut from = last;
+        while from < end {
+            let chunk = self
+                .log
+                .read(partition, from, 1024)
+                .map_err(StreamError::Log)?;
+            if chunk.is_empty() {
+                break;
+            }
+            for record in chunk {
+                if record.offset >= end {
+                    return Ok(prefix);
+                }
+                if record.offset < from {
+                    return Err(StreamError::Log("records are out of order".into()));
+                }
+                from = record.offset + 1;
+                prefix.push(record);
+            }
+        }
+        Ok(prefix)
     }
 
     /// Runs `partition` until it has nothing to read; returns the batches run.
@@ -518,7 +556,14 @@ mod tests {
             if countdown(&mut self.crash.borrow_mut().commits) {
                 return Err("crashed before the group commit".into());
             }
-            self.offsets.borrow_mut().insert(partition, offset);
+            let mut offsets = self.offsets.borrow_mut();
+            if offsets
+                .get(&partition)
+                .is_some_and(|current| offset < *current)
+            {
+                return Ok(());
+            }
+            offsets.insert(partition, offset);
             Ok(())
         }
     }
@@ -630,10 +675,12 @@ mod tests {
     struct RunningTotal {
         snapshots: Rc<RefCell<BTreeMap<u64, u64>>>,
         total: u64,
+        processed_end: Option<u64>,
     }
 
     impl BatchPlan for RunningTotal {
         fn rewind(&mut self, _: u32, start: u64) -> Result<(), String> {
+            self.processed_end = None;
             self.total = if start == 0 {
                 0
             } else {
@@ -648,13 +695,23 @@ mod tests {
 
         fn edits(&mut self, _: u32, records: &[Record]) -> Result<Vec<ObjectEdit>, String> {
             self.total += records.iter().map(|record| record.offset).sum::<u64>();
-            let end = records.last().map_or(0, |record| record.offset + 1);
-            self.snapshots.borrow_mut().insert(end, self.total);
+            self.processed_end = Some(records.last().map_or(0, |record| record.offset + 1));
             Ok(vec![ObjectEdit {
                 object_id: "total".into(),
                 name: "total".into(),
                 properties: BTreeMap::from([("sum".to_string(), self.total.to_string())]),
             }])
+        }
+
+        fn persist(&mut self, _: u32, end: u64) -> Result<(), String> {
+            if self.processed_end == Some(end) {
+                self.snapshots.borrow_mut().entry(end).or_insert(self.total);
+                return Ok(());
+            }
+            if self.snapshots.borrow().contains_key(&end) {
+                return Ok(());
+            }
+            Err(format!("replay has no plan state at {end}"))
         }
     }
 
@@ -748,6 +805,7 @@ mod tests {
             let state = run_through_crashes(seed, total, || RunningTotal {
                 snapshots: snapshots.clone(),
                 total: 0,
+                processed_end: None,
             });
             assert_eq!(
                 state.objects["total"]["sum"],
@@ -755,6 +813,138 @@ mod tests {
                 "seed {seed}"
             );
         }
+    }
+
+    #[test]
+    fn a_longer_replayed_receipt_rereads_the_accepted_range() {
+        let snapshots = Rc::new(RefCell::new(BTreeMap::new()));
+        let spec = spec();
+        let crash = Rc::new(RefCell::new(CrashPlan {
+            applies_after: Some(0),
+            ..Default::default()
+        }));
+        let plane = Plane {
+            state: Rc::new(RefCell::new(PlaneState::default())),
+            crash: crash.clone(),
+        };
+        let group = Group {
+            crash: crash.clone(),
+            ..Group::default()
+        };
+        plane.state.borrow_mut().generation = 1;
+        let mut first = StreamingRunner {
+            spec: &spec,
+            fence: fence(1),
+            log: Log {
+                records: records(20),
+                earliest: 0,
+                crash: crash.clone(),
+            },
+            group: group.clone(),
+            plane: plane.clone(),
+            plan: RunningTotal {
+                snapshots: snapshots.clone(),
+                total: 0,
+                processed_end: None,
+            },
+            max_batch: 20,
+            metrics: StreamingMetrics::default(),
+        };
+        assert!(first.drain(0).is_err());
+        assert!(group.offsets.borrow().get(&0).is_none());
+
+        *crash.borrow_mut() = CrashPlan::default();
+        plane.state.borrow_mut().generation = 2;
+        let mut retry = StreamingRunner {
+            spec: &spec,
+            fence: fence(2),
+            log: Log {
+                records: records(20),
+                earliest: 0,
+                crash: crash.clone(),
+            },
+            group: group.clone(),
+            plane: plane.clone(),
+            plan: RunningTotal {
+                snapshots: snapshots.clone(),
+                total: 0,
+                processed_end: None,
+            },
+            max_batch: 2,
+            metrics: StreamingMetrics::default(),
+        };
+        retry.drain(0).unwrap();
+        assert_eq!(group.offsets.borrow()[&0], 20);
+        assert_eq!(
+            plane.state.borrow().objects["total"]["sum"],
+            (0..20).sum::<u64>().to_string()
+        );
+    }
+
+    #[test]
+    fn a_replayed_shorter_receipt_reconstructs_plan_state() {
+        let snapshots = Rc::new(RefCell::new(BTreeMap::new()));
+        let spec = spec();
+        let crash = Rc::new(RefCell::new(CrashPlan {
+            applies_after: Some(0),
+            ..Default::default()
+        }));
+        let plane = Plane {
+            state: Rc::new(RefCell::new(PlaneState::default())),
+            crash: crash.clone(),
+        };
+        let group = Group {
+            crash: crash.clone(),
+            ..Group::default()
+        };
+        plane.state.borrow_mut().generation = 1;
+        let mut first = StreamingRunner {
+            spec: &spec,
+            fence: fence(1),
+            log: Log {
+                records: records(20),
+                earliest: 0,
+                crash: crash.clone(),
+            },
+            group: group.clone(),
+            plane: plane.clone(),
+            plan: RunningTotal {
+                snapshots: snapshots.clone(),
+                total: 0,
+                processed_end: None,
+            },
+            max_batch: 2,
+            metrics: StreamingMetrics::default(),
+        };
+        assert!(first.drain(0).is_err());
+        assert!(group.offsets.borrow().get(&0).is_none());
+
+        *crash.borrow_mut() = CrashPlan::default();
+        plane.state.borrow_mut().generation = 2;
+        let mut retry = StreamingRunner {
+            spec: &spec,
+            fence: fence(2),
+            log: Log {
+                records: records(20),
+                earliest: 0,
+                crash: crash.clone(),
+            },
+            group: group.clone(),
+            plane: plane.clone(),
+            plan: RunningTotal {
+                snapshots: snapshots.clone(),
+                total: 0,
+                processed_end: None,
+            },
+            max_batch: 20,
+            metrics: StreamingMetrics::default(),
+        };
+        retry.drain(0).unwrap();
+        assert_eq!(group.offsets.borrow()[&0], 20);
+        assert_eq!(
+            plane.state.borrow().objects["total"]["sum"],
+            (0..20).sum::<u64>().to_string()
+        );
     }
 
     #[test]

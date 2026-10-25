@@ -496,8 +496,20 @@ pub fn sample_claimed_job(scratch: &Path, runtime_id: &str) -> (Job, Fence) {
 #[cfg(feature = "sekai-client")]
 pub mod live;
 pub mod streaming;
+mod streaming_fs;
+mod streaming_plane;
+mod streaming_topic;
 #[cfg(feature = "sekai-client")]
 pub use live::LiveClaimTransport;
+pub use streaming_plane::{
+    LiveStreamingPlane, LocalStreamingClient, StreamingBatchApply, StreamingBatchClient,
+};
+#[cfg(feature = "sekai-client")]
+pub use streaming_plane::{
+    SekaiStreamingClient, apply_receipt_from_response, streaming_transform_apply, wire_edits,
+    wire_positions,
+};
+pub use streaming_topic::{TopicGroup, TopicLog};
 
 #[cfg(test)]
 mod tests {
