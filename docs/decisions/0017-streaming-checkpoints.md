@@ -25,9 +25,9 @@ fence is checked against the claim held now, not the one that wrote the key.
 
 1. **One source kind: a partitioned log topic.** Ordered partitions with
    integer offsets and a consumer group whose committed offsets the worker
-   controls. Other source kinds are deferred to #52.
+   controls. Other source kinds stay out of v1.
 2. **One sink: objects through `ApplyStreamingTransformBatch`.** Dataset
-   sinks are deferred to #52.
+   sinks stay out of v1.
 3. **One batch reads one partition.** A run may own several partitions, but
    every batch is cut from a single partition, so its start is one offset.
 4. **The checkpoint key is the batch start position.** It is
@@ -74,8 +74,8 @@ fence is checked against the claim held now, not the one that wrote the key.
   is the record of exactly what was applied.
 - The plane does not check that batches are contiguous. Contiguity is the
   worker's rule 4: the next start is always the previous receipt's end.
-- Rescale (moving partitions between runs) needs a fenced handover and is
-  out of scope here; it is deferred to #52.
+- Rescale (moving partitions between runs) needs a fenced handover and
+  stays out of v1.
 
 ## Rejected alternatives
 
