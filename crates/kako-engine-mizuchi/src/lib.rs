@@ -1,5 +1,8 @@
 //! Opt-in mizuchi SQL worker used by the sandboxed child.
 
+pub mod streaming;
+pub use streaming::MizuchiBatchPlan;
+
 use std::fs::File;
 use std::path::{Path, PathBuf};
 

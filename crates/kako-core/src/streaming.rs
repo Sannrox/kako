@@ -93,6 +93,43 @@ pub struct StreamingSink {
     pub kind: String,
 }
 
+/// One record of a partitioned log topic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Record {
+    pub offset: u64,
+    pub payload: Vec<u8>,
+}
+
+/// One object edit, as the plane's streaming apply takes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectEdit {
+    pub object_id: String,
+    pub name: String,
+    pub properties: BTreeMap<String, String>,
+}
+
+/// The job's streaming plan, run over one batch at a time.
+///
+/// A windowed plan keeps state across batches, so its state must follow
+/// what the plane committed, not what the plan last saw: a batch the plane
+/// then answers as a replay may end earlier than the one the plan ran.
+/// Before every batch the runner calls [`BatchPlan::rewind`] with the
+/// batch's start, and after the plane accepts it [`BatchPlan::persist`]
+/// with the receipt end. The plan must restore on rewind to exactly the
+/// records before that offset, from durable state when the worker
+/// restarted.
+pub trait BatchPlan {
+    fn rewind(&mut self, partition: u32, start: u64) -> Result<(), String>;
+    fn edits(&mut self, partition: u32, records: &[Record]) -> Result<Vec<ObjectEdit>, String>;
+    /// Persist window state at the receipt's exclusive end after the plane
+    /// accepts the batch. A replay may name an earlier end than the records
+    /// just processed; the plan must not publish that speculative state.
+    fn persist(&mut self, partition: u32, end: u64) -> Result<(), String> {
+        let _ = (partition, end);
+        Ok(())
+    }
+}
+
 /// Why a streaming job spec is refused.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamingSpecError {

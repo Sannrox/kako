@@ -13,15 +13,15 @@ default = []
 sekai-client = [
     "dep:sekai-client",
     "dep:sha2",
-    "dep:serde_json",
     "dep:tokio",
     "dep:futures-util",
 ]
 
 [dependencies]
 kako-core = { workspace = true }
-sekai-client = { git = "https://github.com/Sannrox/sekai-chisei", rev = "dccc1e704adf21057bcaa435aef90660db0e9c52", optional = true }
-serde_json = { workspace = true, optional = true }
+sekai-client = { git = "https://github.com/Sannrox/sekai-chisei", rev = "69d7fb79ebddb9379901d373b6d0411c9edd5ca4", optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
 sha2 = { workspace = true, optional = true }
 tokio = { version = "1", optional = true, default-features = false, features = ["rt", "time"] }
 futures-util = { version = "0.3", optional = true, default-features = false, features = ["std"] }
