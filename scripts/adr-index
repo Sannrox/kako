@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Generate the ADR index in docs/decisions/README.md from the ADR headers.
+
+Each docs/decisions/NNNN-*.md file contributes one row: the number from the
+filename, the title from the first heading (without the "ADR NNNN:" prefix),
+and the status from the "Status:" line. The table is written between the
+adr-index markers; prose outside them stays hand-written.
+
+Usage:
+  python3 scripts/adr-index           rewrite the index in place
+  python3 scripts/adr-index --check   exit 1 and print a diff when the index is stale
+"""
+
+import difflib
+import pathlib
+import re
+import sys
+
+DECISIONS = pathlib.Path(__file__).resolve().parent.parent / "docs" / "decisions"
+README = DECISIONS / "README.md"
+START = "<!-- adr-index:start -->"
+END = "<!-- adr-index:end -->"
+
+
+def row(path: pathlib.Path) -> str:
+    number = path.name[:4]
+    lines = path.read_text().splitlines()
+    heading = next((l for l in lines if l.startswith("# ")), None)
+    status = next((m.group(1) for l in lines if (m := re.match(r"^-?\s*Status:\s*(.+)$", l))), None)
+    if heading is None or status is None:
+        sys.exit(f"{path.name}: needs a '# ' heading and a 'Status:' line")
+    title = re.sub(r"^#\s+(ADR\s+\d+:\s*)?", "", heading)
+    return f"| [{number}]({path.name}) | {title} | {status} |"
+
+
+def index() -> str:
+    adrs = sorted(p for p in DECISIONS.glob("[0-9][0-9][0-9][0-9]-*.md"))
+    return "\n".join(["| ADR | Title | Status |", "| --- | --- | --- |", *map(row, adrs)])
+
+
+def main() -> int:
+    if sys.argv[1:] not in ([], ["--check"]):
+        sys.exit("usage: python3 scripts/adr-index [--check]")
+    current = README.read_text()
+    match = re.search(re.escape(START) + r"\n.*?" + re.escape(END), current, re.S)
+    if match is None:
+        sys.exit(f"{README}: missing {START} / {END} markers")
+    wanted = current[: match.start()] + f"{START}\n{index()}\n{END}" + current[match.end() :]
+    if wanted == current:
+        return 0
+    if sys.argv[1:] == ["--check"]:
+        sys.stdout.writelines(
+            difflib.unified_diff(
+                current.splitlines(keepends=True),
+                wanted.splitlines(keepends=True),
+                "docs/decisions/README.md",
+                "docs/decisions/README.md (generated)",
+            )
+        )
+        print("ADR index is stale; run python3 scripts/adr-index", file=sys.stderr)
+        return 1
+    README.write_text(wanted)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
