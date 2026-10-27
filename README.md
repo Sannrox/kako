@@ -272,7 +272,7 @@ catalog archive that unpacks into `KAKO_PYTHON_IMAGES`, `SHA256SUMS`, and
 artifact attestations. The tag version must match `Cargo.toml`, and
 `CHANGELOG.md` must have a `## [<version>]` section, which becomes the
 Release body. Release prep drafts it with
-`python3 scripts/changelog-draft <version>` and commits it; pull requests do
+`bash scripts/changelog-draft.sh <version>` and commits it; pull requests do
 not edit `CHANGELOG.md`. Crates stay unpublished while they depend on git pins
 ([ADR 0008](docs/decisions/0008-release-artifacts.md)).
 

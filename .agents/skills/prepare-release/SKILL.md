@@ -32,9 +32,9 @@ GitHub state unless the maintainer explicitly authorizes that action.
    security checks when access is available; when CI cannot run, say so and
    rely on recorded local evidence for the target commit. Complete when
    evidence is current for the target commit.
-5. Draft the release section with `python3 scripts/changelog-draft <version>`
+5. Draft the release section with `bash scripts/changelog-draft.sh <version>`
    (merged pull requests since the last `v*` tag, grouped by Conventional
-   Commit type, with Breaking and Upgrade notes). Edit it into concise
+   Commit type, breaking changes and upgrade notes first). Edit it into concise
    user-facing notes, fold in any entries still under `Unreleased`, and commit
    it to `CHANGELOG.md` before tagging; the release workflow builds the
    GitHub Release body from that section. Put upgrade and consumer actions
