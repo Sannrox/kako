@@ -7,8 +7,8 @@ and the status from the "Status:" line. The table is written between the
 adr-index markers; prose outside them stays hand-written.
 
 Usage:
-  scripts/adr-index           rewrite the index in place
-  scripts/adr-index --check   exit 1 and print a diff when the index is stale
+  python3 scripts/adr-index           rewrite the index in place
+  python3 scripts/adr-index --check   exit 1 and print a diff when the index is stale
 """
 
 import difflib
@@ -40,7 +40,7 @@ def index() -> str:
 
 def main() -> int:
     if sys.argv[1:] not in ([], ["--check"]):
-        sys.exit("usage: scripts/adr-index [--check]")
+        sys.exit("usage: python3 scripts/adr-index [--check]")
     current = README.read_text()
     match = re.search(re.escape(START) + r"\n.*?" + re.escape(END), current, re.S)
     if match is None:
@@ -57,7 +57,7 @@ def main() -> int:
                 "docs/decisions/README.md (generated)",
             )
         )
-        print("ADR index is stale; run scripts/adr-index", file=sys.stderr)
+        print("ADR index is stale; run python3 scripts/adr-index", file=sys.stderr)
         return 1
     README.write_text(wanted)
     return 0

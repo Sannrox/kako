@@ -24,8 +24,8 @@ Decisions that must outlive a single PR.
 | [0017](0017-streaming-checkpoints.md) | Streaming jobs checkpoint on the batch start position and resume from the receipt | Accepted |
 <!-- adr-index:end -->
 
-The index is generated from each ADR's heading and `Status:` line. Do not edit
-it by hand: run `scripts/adr-index` after adding or changing an ADR. CI runs
-`scripts/adr-index --check`.
+The index is generated from each ADR's heading and `Status:` line. Do not
+edit it by hand: run `python3 scripts/adr-index` after adding or changing an
+ADR. CI runs `python3 scripts/adr-index --check`.
 
 Template: short context, decision, consequences, rejected alternatives.
