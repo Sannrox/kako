@@ -1,0 +1,81 @@
+#!/usr/bin/env python3
+"""Draft the CHANGELOG.md section for a release from merged pull requests.
+
+Reads the squash-merge commits on the first-parent history from the last `v*`
+tag (or the first commit) to HEAD and prints a Keep a Changelog section:
+
+  feat            -> Added
+  fix             -> Fixed
+  refactor, perf  -> Changed (also subjects that are not Conventional Commits)
+  docs, chore, ci, test, build, style -> omitted unless breaking
+
+A `!` after the type, or a body line starting with `BREAKING CHANGE:` or
+`Breaking:`, adds a Breaking entry; a body line starting with `Upgrade:` adds
+an Upgrade entry. The release owner edits the output and commits it.
+
+Usage: python3 scripts/changelog-draft <version>   (run on an up-to-date main)
+"""
+
+import datetime
+import re
+import subprocess
+import sys
+
+GROUPS = {"feat": "Added", "fix": "Fixed", "refactor": "Changed", "perf": "Changed"}
+OMITTED = {"docs", "chore", "ci", "test", "build", "style"}
+ORDER = ["Breaking", "Upgrade", "Added", "Changed", "Fixed"]
+SUBJECT = re.compile(r"^(?P<type>[a-z]+)(\([^)]*\))?(?P<bang>!)?:\s*(?P<text>.+)$")
+PR = re.compile(r"\(#(\d+)\)$")
+NOTE = re.compile(r"^\s*(BREAKING CHANGE|Breaking|Upgrade):\s*(.+)$")
+
+
+def git(*args: str) -> str:
+    return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
+
+
+def since() -> str:
+    tag = subprocess.run(
+        ["git", "describe", "--tags", "--abbrev=0", "--match", "v*", "HEAD"],
+        capture_output=True,
+        text=True,
+    )
+    return tag.stdout.strip() if tag.returncode == 0 else ""
+
+
+def entry(text: str, pr: str) -> str:
+    text = text[:1].upper() + text[1:]
+    return f"- {text} (#{pr})" if pr else f"- {text}"
+
+
+def draft(version: str) -> str:
+    base = since()
+    revs = f"{base}..HEAD" if base else "HEAD"
+    log = git("log", "--first-parent", "--reverse", "--format=%s%x00%b%x1e", revs)
+    sections: dict[str, list[str]] = {name: [] for name in ORDER}
+    for record in filter(str.strip, log.split("\x1e")):
+        subject, _, body = record.strip("\n").partition("\x00")
+        pr_match = PR.search(subject)
+        pr = pr_match.group(1) if pr_match else ""
+        subject = PR.sub("", subject).rstrip()
+        m = SUBJECT.match(subject)
+        kind, text = (m["type"], m["text"]) if m else ("", subject)
+        notes = [n for n in map(NOTE.match, body.splitlines()) if n]
+        for note in notes:
+            name = "Upgrade" if note[1] == "Upgrade" else "Breaking"
+            sections[name].append(entry(note[2], pr))
+        if m and m["bang"] and not any(n[1] != "Upgrade" for n in notes):
+            sections["Breaking"].append(entry(text, pr))
+        if kind not in OMITTED:
+            sections[GROUPS.get(kind, "Changed")].append(entry(text, pr))
+    today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+    out = [f"## [{version}] - {today}"]
+    for name in ORDER:
+        if sections[name]:
+            out += ["", f"### {name}", "", *sections[name]]
+    return "\n".join(out) + "\n"
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2 or not re.fullmatch(r"\d+\.\d+\.\d+\S*", sys.argv[1]):
+        sys.exit("usage: python3 scripts/changelog-draft <version>  (for example 0.4.0)")
+    sys.stdout.write(draft(sys.argv[1]))

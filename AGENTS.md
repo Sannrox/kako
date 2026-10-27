@@ -259,7 +259,10 @@ subsystem when useful. Pull requests should include a concise behavior
 summary, **tests run**, **autoreview result** (for non-trivial code), linked
 issue or context, and any configuration, compatibility, or security
 implications. `.agents/skills/` is tracked; do not treat it as gitignored.
-Record user-visible changes in `CHANGELOG.md` under `Unreleased`.
+Pull requests do not edit `CHANGELOG.md`; it is release-owned. The PR title
+(a Conventional Commit subject, which becomes the squash commit) and the PR
+body carry the change note. When consumers must act, add a `Breaking:` or
+`Upgrade:` line to the body; the release draft picks those up.
 
 ### Public hygiene
 
