@@ -123,7 +123,7 @@ output digests). It needs kekkai `linux_native`. Without that backend the
 script exits 2; the same SQL is still covered by
 `engine::tests::engine_bar_join_matches_fixture` and the MVP join tests.
 
-`scripts/engine-bar/sf/run.sh <tiny|1|10> <dir>` is the scale-factor suite:
+`bash scripts/engine-bar/sf/run.sh <tiny|1|10> <dir>` is the scale-factor suite:
 it generates the decision-support tables, runs the fixed query set in
 `scripts/engine-bar/sf/queries/` on both engines under the same limits, and
 `report.py` scores the run against this page. The `Engine bar` workflow runs
