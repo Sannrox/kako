@@ -487,6 +487,7 @@ mod tests {
                 path: "/nonexistent/kako-pool-missing.csv".into(),
                 markings: Vec::new(),
                 column_markings: Default::default(),
+                object_set: String::new(),
             }],
             outputs: vec!["out.csv".into()],
             write_mode: WriteMode::Overwrite,

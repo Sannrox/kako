@@ -49,6 +49,10 @@ Hosting governed transforms inside the plane stays a non-goal for kako.
 
 ## Consequences
 
+- Isolated-process inputs may name an object set (`object_set` JSON, empty
+  `dataset_id`). The digest hashes that field when present. Dataset-only
+  envelopes are unchanged. `isolated_process.requires` and `code` hash when
+  non-empty, matching the plane; kako-generated specs still omit both.
 - SQL and Python jobs both yield JSON that deserializes as a Sekai run
   receipt.
 - A Sekai adapter can keep fenced write-back as it is; this mapping is the

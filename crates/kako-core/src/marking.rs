@@ -201,6 +201,7 @@ mod tests {
             path: PathBuf::from(format!("{name}.csv")),
             markings: labels.iter().map(|s| (*s).to_string()).collect(),
             column_markings: BTreeMap::new(),
+            object_set: String::new(),
         }
     }
 
@@ -299,6 +300,7 @@ mod tests {
             path: PathBuf::from("orders.csv"),
             markings: Vec::new(),
             column_markings: columns,
+            object_set: String::new(),
         };
         let job = job_with(vec![input], vec!["out.csv".into()], LabelMap::new(), None);
         let lineage = Lineage {

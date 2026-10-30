@@ -11,16 +11,21 @@ JSON. See [ADR 0012](decisions/0012-governed-receipt-mapping.md).
 | `contract_version` | `sekai.governed-transform/v1` |
 | `namespace` | `job.namespace` |
 | `transform_id` | `job.id` |
-| `input_dataset_id` | first input name, or empty |
+| `input_dataset_id` | first dataset input name, skipping object-set aliases; empty if none |
 | `output_dataset_id` | first output name, or empty |
 | `steps` / `quality_rule` | empty |
 | `isolated_process.engine` | `duckdb_sql`, `mizuchi`, or `python` |
 | `isolated_process.runtime_image` | Python lockfile pin; empty for SQL (not plane-admissible; see ADR 0012) |
-| `isolated_process.inputs` | each input name as alias and dataset id |
+| `isolated_process.inputs` | dataset: alias and dataset id; object-set: alias, empty dataset id, canonical `object_set` JSON |
+| `isolated_process.requires` | `sekai.input.object-set=v1` when any input is an object set; omitted when empty |
+| `isolated_process.code` | omitted on kako-generated specs (ADR 0012); hashed when a claimed plane definition carries it |
 | `definition_digest` | plane `definition_digest` over that envelope |
 
-The hashed envelope does not include SQL or Python source. That identity is
-`receipt.code`.
+The hashed envelope of a kako-generated JobSpec does not include SQL or
+Python source. That identity is `receipt.code`. A claimed plane definition
+hashes `isolated_process.code` and `requires` when they are present, and
+hashes object-set descriptors on inputs. Dataset-only envelopes keep their
+earlier digest.
 
 ## Run receipt (`transform_run`)
 

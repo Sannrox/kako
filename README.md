@@ -227,11 +227,14 @@ to retry; kako only executes.
   owner's flood does not occupy every slot. Other adapters may reuse it.
 - **Sekai** ([sekai-chisei](https://github.com/Sannrox/sekai-chisei)): optional
   `kako-source-sekai` adapter (`sekai` feature on `kako`) claims isolated-process
-  transform runs from the control plane. Fence loss aborts write-back. Drain
-  can hand a claim back without writing. Live proof against a plane is a later
-  issue; this crate's default tests use a fake claim client. The same crate
-  runs streaming jobs under the claim fence
-  ([streaming-jobs.md](docs/streaming-jobs.md)).
+  transform runs from the control plane. It stages dataset and object-set
+  snapshot rows under each alias, registers `sekai.input.object-set=v1` so
+  the plane offers object-set work, and copies object markings onto the job
+  as table-level labels. A claim whose object-set input is missing is
+  refused. Fence loss aborts write-back. Drain can hand a claim back without
+  writing. Live proof against a plane is a later issue; this crate's default
+  tests use a fake claim client. The same crate runs streaming jobs under the
+  claim fence ([streaming-jobs.md](docs/streaming-jobs.md)).
 
 ## Receipts
 

@@ -71,12 +71,14 @@ fn measure(engine: Engine, customers: u32, src: &Path) -> Measurement {
                 path: src.join("customers.csv"),
                 markings: Vec::new(),
                 column_markings: Default::default(),
+                object_set: String::new(),
             },
             Input {
                 name: "orders".into(),
                 path: src.join("orders.csv"),
                 markings: Vec::new(),
                 column_markings: Default::default(),
+                object_set: String::new(),
             },
         ])
         .unwrap();

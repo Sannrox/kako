@@ -292,6 +292,7 @@ mod tests {
                 path: input,
                 markings: Vec::new(),
                 column_markings: Default::default(),
+                object_set: String::new(),
             }],
         );
         let sql = "COPY (SELECT 1 AS x) TO 'outputs/one.csv' (HEADER, DELIMITER ',');";
@@ -319,12 +320,14 @@ mod tests {
                     path: customers,
                     markings: Vec::new(),
                     column_markings: Default::default(),
+                    object_set: String::new(),
                 },
                 Input {
                     name: "orders".into(),
                     path: orders,
                     markings: Vec::new(),
                     column_markings: Default::default(),
+                    object_set: String::new(),
                 },
             ],
         );
@@ -370,12 +373,14 @@ mod tests {
                     path: bar.join("customers.csv"),
                     markings: Vec::new(),
                     column_markings: Default::default(),
+                    object_set: String::new(),
                 },
                 Input {
                     name: "orders".into(),
                     path: bar.join("orders.csv"),
                     markings: Vec::new(),
                     column_markings: Default::default(),
+                    object_set: String::new(),
                 },
             ],
         );
@@ -408,6 +413,7 @@ mod tests {
                 path: input,
                 markings: Vec::new(),
                 column_markings: Default::default(),
+                object_set: String::new(),
             }],
         );
         let leak = sql_string(&outside.path().to_string_lossy());
@@ -433,6 +439,7 @@ mod tests {
             path,
             markings: Vec::new(),
             column_markings: Default::default(),
+            object_set: String::new(),
         }
     }
 

@@ -47,6 +47,7 @@ fn run(parent: &Path, data: &Path, query: &str, sql: &str, engine: Engine) -> Ve
             path: data.join(format!("{table}.parquet")),
             markings: Vec::new(),
             column_markings: Default::default(),
+            object_set: String::new(),
         })
         .collect();
     let staged = scratch.stage_inputs(&inputs).unwrap();

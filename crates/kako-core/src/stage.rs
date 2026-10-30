@@ -180,6 +180,7 @@ mod tests {
                     path: src.clone(),
                     markings: Vec::new(),
                     column_markings: Default::default(),
+                    object_set: String::new(),
                 }])
                 .unwrap();
             assert_eq!(staged[0].0, "orders");
@@ -210,6 +211,7 @@ mod tests {
                 path: link,
                 markings: Vec::new(),
                 column_markings: Default::default(),
+                object_set: String::new(),
             }])
             .unwrap_err();
         assert!(err.contains("symlink"), "{err}");

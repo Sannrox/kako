@@ -98,6 +98,9 @@ pub struct Input {
     /// Column-level labels. SQL (mizuchi) propagates these; Python unions
     /// them with [`Self::markings`].
     pub column_markings: BTreeMap<String, Vec<String>>,
+    /// Canonical object-set descriptor JSON when this input is an object
+    /// set. Empty for a dataset input.
+    pub object_set: String,
 }
 
 /// A unit of work: code to run against named inputs.
