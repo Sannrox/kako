@@ -97,6 +97,7 @@ mod tests {
                 path: PathBuf::from("orders.csv"),
                 markings: Vec::new(),
                 column_markings: Default::default(),
+                object_set: String::new(),
             }],
             outputs: vec!["totals.csv".into()],
             write_mode: WriteMode::Overwrite,

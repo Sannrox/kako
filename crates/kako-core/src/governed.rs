@@ -4,6 +4,8 @@
 //! kako-core stays free of Sekai crates. The digest and JSON field names
 //! match the plane's `definition_digest` and `TransformRun` contract.
 
+use std::collections::BTreeMap;
+
 use serde::Serialize;
 use sha2::{Digest as Sha256Digest, Sha256};
 
@@ -13,15 +15,33 @@ use crate::{Digest, Job, Lineage, Receipt};
 pub const CONTRACT_VERSION: &str = "sekai.governed-transform/v1";
 /// JobSpec profile kako runs: a sandboxed child, not in-process projection.
 pub const ISOLATED_CLASS: &str = "isolated_process";
+/// Placement label a runtime must register to be offered object-set work.
+pub const OBJECT_SET_INPUT_LABEL: &str = "sekai.input.object-set";
+/// The object-set row format a labelled runtime understands.
+pub const OBJECT_SET_INPUT_LABEL_VALUE: &str = "v1";
+/// Prefix of an object-set input's snapshot `dataset_id`.
+pub const OBJECT_SET_PIN_PREFIX: &str = "object-set:";
 const TRANSFORM_WORK_COMPLETED: &str = "completed";
 const TRANSFORM_TRIGGER_MANUAL: &str = "manual";
 
-/// Named isolated-process input (`alias` / `dataset_id`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+/// Named isolated-process input (`alias` / `dataset_id` or `object_set`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct TransformInput {
     pub alias: String,
+    /// Empty for an object-set input.
+    #[serde(default)]
     pub dataset_id: String,
+    /// Canonical object-set descriptor JSON. Omitted when empty so dataset
+    /// inputs keep their digest.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub object_set: String,
+}
+
+impl TransformInput {
+    pub fn is_object_set(&self) -> bool {
+        !self.object_set.is_empty()
+    }
 }
 
 /// In-process step. Isolated-process JobSpecs keep this empty.
@@ -36,12 +56,19 @@ pub struct TransformStep {
 }
 
 /// Isolated-process envelope hashed into `definition_digest`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct IsolatedProcessSpec {
     pub engine: String,
     pub runtime_image: String,
     pub inputs: Vec<TransformInput>,
+    /// Placement labels a claiming runtime must carry. Empty keeps the
+    /// digest of definitions stored before placement existed.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub requires: BTreeMap<String, String>,
+    /// The code `engine` runs. Empty on definitions stored before it existed.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub code: String,
 }
 
 /// Sekai `GovernedTransform` isolated-process JobSpec. JSON of this type is
@@ -101,40 +128,100 @@ pub struct TransformPartition {
 
 /// Build the isolated-process JobSpec for a kako job and content-address it.
 pub fn job_spec(job: &Job) -> JobSpec {
-    let inputs: Vec<TransformInput> = job
+    isolated_job_spec(
+        &job.namespace,
+        &job.id,
+        job.outputs.first().cloned().unwrap_or_default(),
+        IsolatedProcessSpec {
+            engine: job.engine.as_str().to_string(),
+            runtime_image: job.runtime_image.clone().unwrap_or_default(),
+            inputs: transform_inputs_from_job(job),
+            requires: object_set_requires(
+                job.inputs.iter().any(|input| !input.object_set.is_empty()),
+            ),
+            code: String::new(),
+        },
+    )
+}
+
+/// Isolated-process JobSpec from plane fields, content-addressed the same way.
+pub fn isolated_job_spec(
+    namespace: impl Into<String>,
+    transform_id: impl Into<String>,
+    output_dataset_id: impl Into<String>,
+    isolated: IsolatedProcessSpec,
+) -> JobSpec {
+    let input_dataset_id = isolated
         .inputs
         .iter()
-        .map(|input| TransformInput {
-            alias: input.name.clone(),
-            dataset_id: input.name.clone(),
-        })
-        .collect();
-    let input_dataset_id = inputs
-        .first()
-        .map(|input| input.alias.clone())
+        .find(|input| !input.is_object_set())
+        .map(|input| input.dataset_id.clone())
         .unwrap_or_default();
-    let output_dataset_id = job.outputs.first().cloned().unwrap_or_default();
-    // Plane admission requires a nonempty runtime_image. kako SQL has none;
-    // unpinned Python hashes the requested empty pin and records the resolved
-    // catalog id on TransformRun. This conversion is not plane admission.
-    let runtime_image = job.runtime_image.clone().unwrap_or_default();
     let mut spec = JobSpec {
         contract_version: CONTRACT_VERSION.into(),
-        namespace: job.namespace.clone(),
-        transform_id: job.id.clone(),
+        namespace: namespace.into(),
+        transform_id: transform_id.into(),
         input_dataset_id,
-        output_dataset_id,
+        output_dataset_id: output_dataset_id.into(),
         steps: Vec::new(),
         quality_rule: String::new(),
         definition_digest: String::new(),
-        isolated_process: IsolatedProcessSpec {
-            engine: job.engine.as_str().to_string(),
-            runtime_image,
-            inputs,
-        },
+        isolated_process: isolated,
     };
     spec.definition_digest = definition_digest(&spec);
     spec
+}
+
+/// Recompute the isolated-process digest and refuse a mismatch.
+pub fn require_matching_digest(spec: &JobSpec, claimed: &str) -> Result<(), String> {
+    let computed = definition_digest(spec);
+    if computed != claimed {
+        return Err(
+            "claimed definition digest does not match the isolated-process envelope".into(),
+        );
+    }
+    Ok(())
+}
+
+fn transform_inputs_from_job(job: &Job) -> Vec<TransformInput> {
+    job.inputs
+        .iter()
+        .map(|input| {
+            if input.object_set.is_empty() {
+                TransformInput {
+                    alias: input.name.clone(),
+                    dataset_id: input.name.clone(),
+                    object_set: String::new(),
+                }
+            } else {
+                TransformInput {
+                    alias: input.name.clone(),
+                    dataset_id: String::new(),
+                    object_set: canonical_object_set(&input.object_set),
+                }
+            }
+        })
+        .collect()
+}
+
+fn object_set_requires(present: bool) -> BTreeMap<String, String> {
+    if present {
+        BTreeMap::from([(
+            OBJECT_SET_INPUT_LABEL.into(),
+            OBJECT_SET_INPUT_LABEL_VALUE.into(),
+        )])
+    } else {
+        BTreeMap::new()
+    }
+}
+
+/// Compact object-set JSON with keys in order, matching the plane descriptor.
+pub fn canonical_object_set(json: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(json)
+        .ok()
+        .filter(serde_json::Value::is_object)
+        .and_then(|value| serde_json::to_string(&value).ok())
+        .unwrap_or_else(|| json.to_string())
 }
 
 /// Map a completed kako receipt onto a Sekai run receipt.
@@ -198,6 +285,18 @@ fn definition_digest(spec: &JobSpec) -> String {
         serde_json::to_vec(&spec.isolated_process.inputs).expect("job spec inputs json");
     hasher.update((inputs_json.len() as u64).to_le_bytes());
     hasher.update(&inputs_json);
+    if !spec.isolated_process.code.is_empty() {
+        hash_field(&mut hasher, "code");
+        hash_field(&mut hasher, &spec.isolated_process.code);
+    }
+    if !spec.isolated_process.requires.is_empty() {
+        hash_field(&mut hasher, "requires");
+        hasher.update((spec.isolated_process.requires.len() as u64).to_le_bytes());
+        for (key, value) in &spec.isolated_process.requires {
+            hash_field(&mut hasher, key);
+            hash_field(&mut hasher, value);
+        }
+    }
     format!("sha256:{:x}", hasher.finalize())
 }
 
@@ -275,12 +374,14 @@ mod tests {
                     path: PathBuf::from("customers.csv"),
                     markings: Vec::new(),
                     column_markings: Default::default(),
+                    object_set: String::new(),
                 },
                 Input {
                     name: "orders".into(),
                     path: PathBuf::from("orders.csv"),
                     markings: Vec::new(),
                     column_markings: Default::default(),
+                    object_set: String::new(),
                 },
             ],
             outputs: vec!["totals.csv".into()],
@@ -309,6 +410,7 @@ mod tests {
                 path: PathBuf::from("events.csv"),
                 markings: Vec::new(),
                 column_markings: Default::default(),
+                object_set: String::new(),
             }],
             outputs: vec!["out.csv".into()],
             write_mode: WriteMode::Overwrite,
@@ -558,5 +660,97 @@ mod tests {
             run.definition_digest,
             job_spec(&python_job()).definition_digest
         );
+    }
+
+    #[test]
+    fn object_set_input_parses_and_is_omitted_from_dataset_json() {
+        let dataset = TransformInput {
+            alias: "orders".into(),
+            dataset_id: "orders".into(),
+            object_set: String::new(),
+        };
+        let json = serde_json::to_value(&dataset).unwrap();
+        assert_eq!(json["alias"], "orders");
+        assert_eq!(json["dataset_id"], "orders");
+        assert!(json.get("object_set").is_none());
+        let object_set = TransformInput {
+            alias: "customers".into(),
+            dataset_id: String::new(),
+            object_set: r#"{"kind":"Customer","namespace":"sales"}"#.into(),
+        };
+        let from_plane: TransformInput = serde_json::from_str(
+            r#"{"alias":"customers","dataset_id":"","object_set":"{\"kind\":\"Customer\",\"namespace\":\"sales\"}"}"#,
+        )
+        .unwrap();
+        assert_eq!(from_plane, object_set);
+        assert!(from_plane.is_object_set());
+        assert!(from_plane.dataset_id.is_empty());
+        assert_eq!(
+            serde_json::to_string(&object_set).unwrap(),
+            r#"{"alias":"customers","dataset_id":"","object_set":"{\"kind\":\"Customer\",\"namespace\":\"sales\"}"}"#
+        );
+        let spec: IsolatedProcessSpec = serde_json::from_str(
+            r#"{"engine":"duckdb_sql","runtime_image":"","inputs":[{"alias":"orders","dataset_id":"orders"}]}"#,
+        )
+        .unwrap();
+        assert!(spec.requires.is_empty());
+        assert!(spec.code.is_empty());
+        assert!(!spec.inputs[0].is_object_set());
+    }
+
+    #[test]
+    fn object_set_definition_digest_matches_plane_envelope_and_detects_tamper() {
+        let descriptor = r#"{"kind":"Customer","namespace":"sales"}"#;
+        let isolated = IsolatedProcessSpec {
+            engine: "duckdb_sql".into(),
+            runtime_image: String::new(),
+            inputs: vec![
+                TransformInput {
+                    alias: "orders".into(),
+                    dataset_id: "orders".into(),
+                    object_set: String::new(),
+                },
+                TransformInput {
+                    alias: "customers".into(),
+                    dataset_id: String::new(),
+                    object_set: canonical_object_set(descriptor),
+                },
+            ],
+            requires: object_set_requires(true),
+            code: String::new(),
+        };
+        let spec = isolated_job_spec("ops", "join-objects", "totals.csv", isolated.clone());
+        assert_eq!(spec.input_dataset_id, "orders");
+        assert_eq!(
+            serde_json::to_string(&spec.isolated_process.inputs).unwrap(),
+            r#"[{"alias":"orders","dataset_id":"orders"},{"alias":"customers","dataset_id":"","object_set":"{\"kind\":\"Customer\",\"namespace\":\"sales\"}"}]"#
+        );
+        assert_eq!(
+            spec.isolated_process.requires[OBJECT_SET_INPUT_LABEL],
+            OBJECT_SET_INPUT_LABEL_VALUE
+        );
+        require_matching_digest(&spec, &spec.definition_digest).unwrap();
+        let mut tampered = isolated;
+        tampered.inputs[1].object_set =
+            canonical_object_set(r#"{"kind":"Other","namespace":"sales"}"#);
+        let other = isolated_job_spec("ops", "join-objects", "totals.csv", tampered);
+        assert_ne!(spec.definition_digest, other.definition_digest);
+        let error = require_matching_digest(&other, &spec.definition_digest).unwrap_err();
+        assert!(error.contains("does not match"), "{error}");
+        assert_eq!(
+            job_spec(&sql_job()).definition_digest,
+            "sha256:b1939a06666b24d52a139a893c56fe8f354d329ee5d3d4ad32970d9351a2c50a"
+        );
+    }
+
+    #[test]
+    fn job_spec_object_set_input_uses_empty_dataset_id() {
+        let mut job = sql_job();
+        job.inputs[1].object_set = r#"{"namespace":"sales","kind":"Customer"}"#.into();
+        let spec = job_spec(&job);
+        assert!(spec.isolated_process.inputs[1].is_object_set());
+        assert!(spec.isolated_process.inputs[1].dataset_id.is_empty());
+        assert_eq!(spec.input_dataset_id, "customers");
+        assert!(!spec.isolated_process.requires.is_empty());
     }
 }

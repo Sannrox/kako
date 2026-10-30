@@ -36,6 +36,8 @@ pub enum SekaiSourceError {
     Transport(String),
     /// Plane accepted the RPC but quarantined the result. The claim is over.
     Quarantined(String),
+    /// Claimed work uses an input variant this runner did not advertise.
+    UnsupportedInput(String),
 }
 
 impl std::fmt::Display for SekaiSourceError {
@@ -45,6 +47,7 @@ impl std::fmt::Display for SekaiSourceError {
             Self::Heartbeat(message) => write!(formatter, "heartbeat: {message}"),
             Self::Transport(message) => write!(formatter, "sekai source: {message}"),
             Self::Quarantined(message) => write!(formatter, "write-back quarantined: {message}"),
+            Self::UnsupportedInput(message) => write!(formatter, "unsupported input: {message}"),
         }
     }
 }
@@ -469,6 +472,7 @@ pub fn sample_claimed_job(scratch: &Path, runtime_id: &str) -> (Job, Fence) {
             path: input,
             markings: Vec::new(),
             column_markings: Default::default(),
+            object_set: String::new(),
         }],
         outputs: vec!["out".into()],
         write_mode: WriteMode::Overwrite,

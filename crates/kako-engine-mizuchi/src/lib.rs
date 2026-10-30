@@ -487,12 +487,14 @@ mod tests {
                     path: bar.join("customers.csv"),
                     markings: Vec::new(),
                     column_markings: Default::default(),
+                    object_set: String::new(),
                 },
                 Input {
                     name: "orders".into(),
                     path: bar.join("orders.csv"),
                     markings: Vec::new(),
                     column_markings: Default::default(),
+                    object_set: String::new(),
                 },
             ])
             .unwrap();
@@ -526,12 +528,14 @@ mod tests {
                     path: bar.join("customers.csv"),
                     markings: Vec::new(),
                     column_markings: Default::default(),
+                    object_set: String::new(),
                 },
                 Input {
                     name: "orders".into(),
                     path: bar.join("orders.csv"),
                     markings: Vec::new(),
                     column_markings: Default::default(),
+                    object_set: String::new(),
                 },
             ])
             .unwrap();
@@ -604,6 +608,7 @@ mod tests {
                 path: input.clone(),
                 markings: Vec::new(),
                 column_markings: Default::default(),
+                object_set: String::new(),
             }])
             .unwrap();
         let first = run_copy_with_mode(&scratch, &staged, sql, WriteMode::Overwrite);
@@ -615,6 +620,7 @@ mod tests {
                 path: input.clone(),
                 markings: Vec::new(),
                 column_markings: Default::default(),
+                object_set: String::new(),
             }])
             .unwrap();
         let second = run_copy_with_mode(&scratch2, &staged2, sql, WriteMode::Overwrite);
@@ -639,6 +645,7 @@ mod tests {
                 path: input,
                 markings: Vec::new(),
                 column_markings: Default::default(),
+                object_set: String::new(),
             }])
             .unwrap();
         let error = run_sql(
@@ -664,6 +671,7 @@ mod tests {
                 path: input,
                 markings: Vec::new(),
                 column_markings: Default::default(),
+                object_set: String::new(),
             }])
             .unwrap();
         let cancel = CancelToken::new();
@@ -703,12 +711,14 @@ mod tests {
                     path: bar.join("customers.csv"),
                     markings: Vec::new(),
                     column_markings: Default::default(),
+                    object_set: String::new(),
                 },
                 Input {
                     name: "orders".into(),
                     path: bar.join("orders.csv"),
                     markings: Vec::new(),
                     column_markings: Default::default(),
+                    object_set: String::new(),
                 },
             ])
             .unwrap();
@@ -829,6 +839,7 @@ mod tests {
                 path: input.clone(),
                 markings: Vec::new(),
                 column_markings: Default::default(),
+                object_set: String::new(),
             }])
             .unwrap();
         let mut inputs = as_inputs(&staged);
@@ -862,6 +873,7 @@ mod tests {
                 path: input,
                 markings: Vec::new(),
                 column_markings: Default::default(),
+                object_set: String::new(),
             }])
             .unwrap();
         let mut inputs2 = as_inputs(&staged2);
@@ -901,6 +913,7 @@ mod tests {
                     columns.insert("ssn".into(), vec!["pii".into()]);
                     columns
                 },
+                object_set: String::new(),
             }],
             outputs: vec!["ssn.csv".into()],
             write_mode: WriteMode::Overwrite,

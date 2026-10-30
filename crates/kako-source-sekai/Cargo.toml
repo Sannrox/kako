@@ -19,7 +19,7 @@ sekai-client = [
 
 [dependencies]
 kako-core = { workspace = true }
-sekai-client = { git = "https://github.com/Sannrox/sekai-chisei", rev = "69d7fb79ebddb9379901d373b6d0411c9edd5ca4", optional = true }
+sekai-client = { git = "https://github.com/Sannrox/sekai-chisei", rev = "2c2759d5a2e02d2ad3e4846483a296afbf2e01be", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true, optional = true }

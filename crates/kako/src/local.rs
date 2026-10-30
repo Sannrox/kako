@@ -377,6 +377,7 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
             path: input_path,
             markings,
             column_markings,
+            object_set: String::new(),
         });
     }
     let mut model = None;
@@ -429,6 +430,7 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
                     .unwrap_or_default(),
             ),
             column_markings: Default::default(),
+            object_set: String::new(),
         });
         if parsed
             .input_column_markings
