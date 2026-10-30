@@ -10,6 +10,8 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-30
+
 ### Added
 
 - Scoring jobs from a model registry batch descriptor. A `scoring` section
@@ -155,8 +157,9 @@ uses [Semantic Versioning](https://semver.org/).
   tests that need the helper are `#[ignore]` in offline `cargo test`.
 
 - Tagged GitHub releases package the runner binary, SQL and Python runtime
-  images, checksums, and artifact attestations. Crates stay unpublished
-  while git pins remain
+  images, checksums, and artifact attestations. A `v*` tag also pushes
+  `ghcr.io/sannrox/kako:<version>` (never `latest`). `deploy/tenkai.toml`
+  is the Tenkai product entry. Crates stay unpublished while git pins remain
   ([ADR 0008](docs/decisions/0008-release-artifacts.md)).
   `bash scripts/release-dry-run.sh --out dist` builds the same files
   without creating a release.

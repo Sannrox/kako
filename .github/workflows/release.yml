@@ -52,6 +52,35 @@ jobs:
           path: dist/
           if-no-files-found: error
 
+  push-image:
+    name: Push SQL image
+    needs: package
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: kako-release
+          path: dist
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Load, tag, and push
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          image="ghcr.io/sannrox/kako:${version}"
+          docker load -i dist/kako-sql-image.tar
+          docker tag "kako-sql:${version}" "$image"
+          docker push "$image"
+
   attest:
     name: Attest artifacts
     needs: package

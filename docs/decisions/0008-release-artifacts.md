@@ -27,6 +27,9 @@ pool's health and drain are a separate Issue.
      dry-run without `--with-site-packages` writes the lockfile layout only.
    - `SHA256SUMS` for those files;
    - GitHub artifact attestations on the files.
+   The same tag also pushes the SQL image to `ghcr.io/sannrox/kako:<version>`
+   (never `latest`). `deploy/tenkai.toml` is the Tenkai product entry for that
+   image.
 2. **Crates stay `publish = false`** until every runtime dependency is a
    registry crate. Flipping that bit while git pins remain would produce a
    crate that cannot be published.

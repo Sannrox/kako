@@ -1,0 +1,33 @@
+# tenkai product manifest for kako.
+#
+# Deploys a runner-pool process from the tagged SQL image. Commands are
+# self-contained (no repo checkout), so this manifest can be published
+# straight from a git tag. The release workflow pushes
+# ghcr.io/sannrox/kako:<version> on v*.
+
+[product]
+name = "kako"
+version = "0.1.0"
+description = "Sandboxed data-transform runner"
+
+[deploy]
+workdir = "."
+install = """
+set -e
+IMG=ghcr.io/sannrox/kako:0.1.0
+docker pull "$IMG"
+docker rm -f kako-runner >/dev/null 2>&1 || true
+docker run -d --name kako-runner -p 8080:8080 "$IMG" serve --listen 0.0.0.0:8080
+"""
+uninstall = "docker rm -f kako-runner"
+health = """
+for i in $(seq 1 15); do
+  docker inspect -f '{{.State.Running}}' kako-runner 2>/dev/null | grep -qx true && exit 0
+  sleep 1
+done
+exit 1
+"""
+
+[delivery]
+has_migration = false
+changes_identity_config = false
