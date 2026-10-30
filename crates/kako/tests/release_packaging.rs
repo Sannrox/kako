@@ -211,6 +211,22 @@ fn release_workflow_builds_signed_tag_artifacts() {
         yaml.contains("github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"),
         "attest and publish must be tag-only: {yaml}"
     );
+    assert!(
+        yaml.contains("ghcr.io/sannrox/kako"),
+        "tagged releases must push ghcr.io/sannrox/kako: {yaml}"
+    );
+    assert!(
+        yaml.contains("packages: write"),
+        "image push needs packages: write: {yaml}"
+    );
+    assert!(
+        yaml.contains("docker push"),
+        "tagged releases must docker push the SQL image: {yaml}"
+    );
+    assert!(
+        !yaml.contains(":latest"),
+        "release must not push a latest image tag: {yaml}"
+    );
     let attest_idx = yaml
         .find("actions/attest-build-provenance@")
         .expect("missing attest action");
@@ -244,5 +260,54 @@ fn crates_stay_unpublished_while_git_pinned() {
     assert!(
         cargo.contains("publish = false"),
         "workspace must keep publish = false: {cargo}"
+    );
+}
+
+fn workspace_version() -> String {
+    for line in fs::read_to_string(workspace_root().join("Cargo.toml"))
+        .unwrap()
+        .lines()
+    {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("version = \"")
+            && let Some(end) = rest.find('"')
+        {
+            return rest[..end].to_string();
+        }
+    }
+    panic!("workspace version missing from Cargo.toml");
+}
+
+#[test]
+fn first_release_notes_and_tenkai_entry_match_workspace_version() {
+    let version = workspace_version();
+    assert_eq!(version, "0.1.0", "first release is 0.1.0");
+    let changelog = fs::read_to_string(workspace_root().join("CHANGELOG.md")).unwrap();
+    assert!(
+        changelog.contains(&format!("## [{version}]")),
+        "CHANGELOG.md missing ## [{version}]"
+    );
+    let tenkai = fs::read_to_string(workspace_root().join("deploy/tenkai.toml")).unwrap();
+    assert!(
+        tenkai.contains(&format!("version = \"{version}\"")),
+        "deploy/tenkai.toml product.version must match workspace {version}"
+    );
+    assert!(
+        tenkai.contains(&format!("ghcr.io/sannrox/kako:{version}")),
+        "deploy/tenkai.toml must pin ghcr.io/sannrox/kako:{version}"
+    );
+    assert!(
+        !tenkai.contains("latest"),
+        "Tenkai entry must not reference latest"
+    );
+    let adr = fs::read_to_string(workspace_root().join("docs/decisions/0008-release-artifacts.md"))
+        .unwrap();
+    assert!(
+        adr.contains("deploy/tenkai.toml"),
+        "ADR 0008 must name deploy/tenkai.toml"
+    );
+    assert!(
+        adr.contains("ghcr.io/sannrox/kako"),
+        "ADR 0008 must name the GHCR SQL image"
     );
 }
