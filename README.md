@@ -269,18 +269,15 @@ run receipt
 
 ## Releases
 
-A `v*` tag runs `.github/workflows/release.yml` and publishes a GitHub
-Release: the Linux runner binary, SQL and Python runtime images, a Python
-catalog archive that unpacks into `KAKO_PYTHON_IMAGES`, `SHA256SUMS`, and
+A signed, annotated `v*` tag runs `.github/workflows/release.yml` and
+publishes a GitHub Release: the Linux runner binary, SQL and Python runtime
+images, a Python catalog archive that unpacks into `KAKO_PYTHON_IMAGES`, an
+SBOM, `SHA256SUMS`, the Tenkai release manifest `kako-release.json`, and
 artifact attestations. The same tag pushes `ghcr.io/sannrox/kako:<version>`
-(never `latest`). `deploy/tenkai.toml` is the Tenkai product entry. The tag
-version must match `Cargo.toml`, and `CHANGELOG.md` must have a
-`## [<version>]` section, which becomes the Release body. Release prep drafts
-it with `bash scripts/changelog-draft.sh <version>` and commits it; pull
-requests do not edit `CHANGELOG.md`. Crates stay unpublished while they
-depend on git pins
-([ADR 0008](docs/decisions/0008-release-artifacts.md)). Cutting `v0.1.0-rc.1`
-or `v0.1.0` is a maintainer action.
+(never `latest`). `deploy/tenkai.toml` is the Tenkai product entry. Crates
+stay unpublished while they depend on git pins
+([ADR 0008](docs/decisions/0008-release-artifacts.md)). Cutting a tag is a
+maintainer action: [RELEASING.md](RELEASING.md).
 
 ```bash
 bash scripts/release-dry-run.sh --out dist
@@ -291,6 +288,7 @@ bash scripts/release-dry-run.sh --out dist --with-images --with-site-packages
 the hashed lockfile into the catalog tree. `workflow_dispatch` and pull
 requests package artifacts without attesting or creating a GitHub Release.
 Attestations and the Release are tag-only (`v*`).
+`bash scripts/validate-release.sh` runs the release script self-tests.
 
 ## Runner pool
 

@@ -137,6 +137,7 @@ Rows beyond `## Testing Guidelines`:
 | dependency pins (kekkai, adapter clients) | `Cargo.lock` diff reviewed; the pinned tag exists upstream; upstream release notes read |
 | runtime image / Python packages | image builds; package set matches the documented policy |
 | docs, templates, Skills | `bash scripts/validate-workflow-skills.sh`; `python3 scripts/adr-index --check` for decision records |
+| `v*` release path | `bash scripts/validate-release.sh` |
 
 ### Release audit
 
@@ -148,7 +149,8 @@ Rows beyond `## Testing Guidelines`:
 - release notes: draft with `bash scripts/changelog-draft.sh <version>`, edit
   them into user-facing notes, fold in any entries still under `Unreleased`,
   and commit the version section to `CHANGELOG.md` before tagging; the
-  release workflow builds the GitHub Release body from that section.
+  release workflow builds the GitHub Release body from that section;
+- tagging: [RELEASING.md](RELEASING.md). Agents never push `v*` tags.
 
 ## Agent delivery closeout (required)
 

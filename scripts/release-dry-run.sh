@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Package kako release artifacts into --out and write SHA256SUMS.
 #
-# Always writes the runner tarball and the Python catalog tree. With
-# --with-images, also builds and saves the SQL and Python container images
-# when docker is on PATH.
+# Always writes the runner tarball, the Python catalog tree, and the SBOM
+# (kako.cdx.json). With --with-images, also builds and saves the SQL and
+# Python container images when docker is on PATH.
 #
 # Usage:
 #   bash scripts/release-dry-run.sh --out dist
@@ -146,10 +146,12 @@ if [[ "$with_images" == true ]]; then
   docker save "kako-python:${version}" -o "$out/kako-python-image.tar"
 fi
 
+python3 "$root/scripts/release-sbom.py" "$out/kako.cdx.json" "$python_dir/requirements.txt" >/dev/null
+
 (
   cd "$out"
   files=()
-  for f in kako-*.tar.gz kako-*-image.tar; do
+  for f in kako-*.tar.gz kako-*-image.tar kako.cdx.json; do
     [[ -e "$f" ]] || continue
     files+=("$f")
   done
