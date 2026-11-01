@@ -8,6 +8,13 @@ on:
     paths:
       - ".github/workflows/release.yml"
       - "scripts/release-dry-run.sh"
+      - "scripts/verify-release-tag.sh"
+      - "scripts/changelog-notes.py"
+      - "scripts/release-manifest.py"
+      - "scripts/release-sbom.py"
+      - "scripts/validate-release.sh"
+      - "security/**"
+      - "CHANGELOG.md"
       - "runtime/sql/**"
       - "runtime/python/Dockerfile"
       - "runtime/python/requirements.txt"
@@ -24,9 +31,36 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Pull requests and workflow_dispatch are dry runs: they package the same
+# files and never mint attestations, push images, or create a Release.
 jobs:
+  scripts:
+    name: Release scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: bash scripts/validate-release.sh
+
+  verify-tag:
+    name: Verify signed tag
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: the signer allowlist is read from origin/main, and the
+      # tagged commit must be on main or a release/v* branch.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      # checkout may leave a lightweight ref; fetch the real tag object.
+      - name: Fetch annotated tag object
+        run: git fetch --force origin "refs/tags/${GITHUB_REF_NAME}:refs/tags/${GITHUB_REF_NAME}"
+      - name: Refuse unsigned, lightweight, or mismatched tags
+        run: bash scripts/verify-release-tag.sh verify "${GITHUB_REF_NAME}" "${GITHUB_SHA}"
+
   package:
     name: Package artifacts
+    needs: [scripts, verify-tag]
+    if: ${{ !cancelled() && needs.scripts.result == 'success' && (needs.verify-tag.result == 'success' || needs.verify-tag.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -55,11 +89,13 @@ jobs:
   push-image:
     name: Push SQL image
     needs: package
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.package.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    outputs:
+      image: ${{ steps.push.outputs.image }}
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -71,6 +107,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Load, tag, and push
+        id: push
         env:
           TAG: ${{ github.ref_name }}
         run: |
@@ -80,65 +117,129 @@ jobs:
           docker load -i dist/kako-sql-image.tar
           docker tag "kako-sql:${version}" "$image"
           docker push "$image"
+          digest="$(docker inspect --format '{{index .RepoDigests 0}}' "$image")"
+          echo "image=${image}=${digest#*@}" >>"$GITHUB_OUTPUT"
 
   attest:
     name: Attest artifacts
     needs: package
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.package.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
       attestations: write
+    outputs:
+      provenance: ${{ steps.provenance.outputs.attestation-url }}
+      sbom: ${{ steps.sbom.outputs.attestation-url }}
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: kako-release
           path: dist
-      - name: Attest artifacts
+      - name: Attest provenance
+        id: provenance
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
         with:
           subject-path: |
             dist/kako-*.tar.gz
             dist/kako-*-image.tar
+            dist/kako.cdx.json
             dist/SHA256SUMS
+      - name: Attest SBOM
+        id: sbom
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3.0.0
+        with:
+          subject-path: |
+            dist/kako-*.tar.gz
+            dist/kako-*-image.tar
+          sbom-path: dist/kako.cdx.json
 
   publish:
     name: GitHub Release
-    needs: [package, attest]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [package, attest, push-image]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.package.result == 'success' && needs.attest.result == 'success' && needs.push-image.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: kako-release
           path: dist
+      - name: Write release manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          IMAGE: ${{ needs.push-image.outputs.image }}
+          PROVENANCE: ${{ needs.attest.outputs.provenance }}
+          SBOM: ${{ needs.attest.outputs.sbom }}
+        run: |
+          set -euo pipefail
+          # Gate flags come from the labels of every pull request squashed into
+          # prev..tag, whatever branch it merged into. The baseline is the
+          # nearest final (non-pre-release) ancestor tag, so a final release
+          # also carries gates first seen in its release candidates.
+          # Without a final tag, start at the first pull request: the commits
+          # before it are the repository bootstrap and carry no labels.
+          prev="$(git describe --tags --abbrev=0 --match 'v*' --exclude '*-*' "${GITHUB_SHA}^" 2>/dev/null || true)"
+          if [[ -z "$prev" ]]; then
+            prev="$(git log --reverse --format='%H %s' "$GITHUB_SHA" | awk '!found && /\(#[0-9]+\)$/ { print $1; found = 1 }')^"
+          fi
+          subjects="$(git log --format='%h %s' "${prev}..${GITHUB_SHA}")"
+          # Fail closed: a commit with no pull request, or any lookup error,
+          # fails the step instead of dropping a gate.
+          if unattributed="$(grep -vE '\(#[0-9]+\)$' <<<"$subjects")"; then
+            echo "commits without a pull request reference since ${prev}:" >&2
+            echo "$unattributed" >&2
+            exit 1
+          fi
+          labels=()
+          prs="$(sed -nE 's/.*\(#([0-9]+)\)$/\1/p' <<<"$subjects" | sort -un)"
+          while IFS= read -r pr; do
+            names="$(gh pr view "$pr" --json labels --jq '.labels[].name')"
+            while IFS= read -r label; do
+              if [[ -n "$label" ]]; then labels+=(--label "$label"); fi
+            done <<<"$names"
+          done <<<"$prs"
+          python3 scripts/release-manifest.py \
+            --version "${TAG#v}" --git-sha "$GITHUB_SHA" --tag "$TAG" \
+            --dist dist --out dist/kako-release.json \
+            --image "$IMAGE" --attestation "$PROVENANCE" --attestation "$SBOM" \
+            "${labels[@]}"
+      # The manifest's own provenance attestation is its signature for Tenkai.
+      - name: Sign release manifest
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: dist/kako-release.json
       - name: Notes from CHANGELOG
         env:
           TAG: ${{ github.ref_name }}
-        run: |
-          version="${TAG#v}"
-          python3 - "$version" <<'PY'
-          import pathlib, sys
-          version = sys.argv[1]
-          text = pathlib.Path("CHANGELOG.md").read_text()
-          heading = f"## [{version}]"
-          start = text.find(heading)
-          if start < 0:
-              raise SystemExit(f"CHANGELOG.md has no {heading} section")
-          rest = text[start + len(heading):]
-          nxt = rest.find("\n## [")
-          body = rest if nxt < 0 else rest[:nxt]
-          pathlib.Path("dist/RELEASE_NOTES.md").write_text(heading + body)
-          PY
-      - name: Create GitHub Release
+        run: python3 scripts/changelog-notes.py "${TAG#v}" >dist/RELEASE_NOTES.md
+      - name: Draft then publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
         run: |
-          gh release create "$TAG" dist/kako-*.tar.gz dist/kako-*-image.tar dist/SHA256SUMS \
-            --title "$TAG" \
-            --notes-file dist/RELEASE_NOTES.md
+          set -euo pipefail
+          files=(dist/kako-*.tar.gz dist/kako-*-image.tar dist/kako.cdx.json dist/kako-release.json dist/SHA256SUMS)
+          # A rerun after a partial failure finds the draft and finishes it.
+          # A published release is immutable; never replace its assets.
+          if draft="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            if [[ "$draft" != true ]]; then
+              echo "release ${TAG} is already published" >&2
+              exit 1
+            fi
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" "${files[@]}" --draft --verify-tag \
+              --title "$TAG" --notes-file dist/RELEASE_NOTES.md
+          fi
+          gh release edit "$TAG" --title "$TAG" --notes-file dist/RELEASE_NOTES.md --draft=false

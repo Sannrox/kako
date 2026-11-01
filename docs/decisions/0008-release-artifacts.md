@@ -26,7 +26,10 @@ pool's health and drain are a separate Issue.
      `current` pointer ([ADR 0006](0006-python-package-policy.md)). A local
      dry-run without `--with-site-packages` writes the lockfile layout only.
    - `SHA256SUMS` for those files;
-   - GitHub artifact attestations on the files.
+   - a CycloneDX SBOM of the Rust crates and the Python lockfile;
+   - GitHub artifact attestations (provenance and SBOM) on the files;
+   - `kako-release.json`, the family release manifest Tenkai admits, with
+     its own provenance attestation.
    The same tag also pushes the SQL image to `ghcr.io/sannrox/kako:<version>`
    (never `latest`). `deploy/tenkai.toml` is the Tenkai product entry for that
    image.
@@ -38,9 +41,12 @@ pool's health and drain are a separate Issue.
    attestations and the GitHub Release. A real tag (`v*`) passes `--version`
    from the tag, which must match `Cargo.toml`, attests the files, and
    creates the Release from `CHANGELOG.md` for that version.
-4. **Signing.** Provenance is GitHub artifact attestations on tagged
-   artifacts only. Pull requests do not mint attestations. There is no
-   long-lived project signing key in this repository.
+4. **Signing.** The tag itself is annotated and signed by a maintainer key
+   listed in `security/release-tag-fingerprints`; the workflow refuses any
+   other tag before packaging. Provenance is GitHub artifact attestations on
+   tagged artifacts only. Pull requests do not mint attestations. There is no
+   long-lived project signing key in this repository, only the maintainer's
+   public key.
 
 ## Consequences
 
