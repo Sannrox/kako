@@ -118,20 +118,33 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          packages=(kako-core kako-sandbox kako-engine-duckdb kako-engine-mizuchi kako-engine-python kako-worker kako-source-sekai kako)
+          # Every workspace library crate, so a new crate is covered without editing this list.
+          metadata="$(cargo metadata --locked --no-deps --format-version 1)"
+          mapfile -t packages < <(jq -r '.packages[] | select(any(.targets[]; .kind | index("lib"))) | .name' <<<"$metadata")
           # One run per package: only a package that reports a break can be
           # waived; a tool or build failure in any package stays red.
           broken=()
           for package in "${packages[@]}"; do
+            # A crate added by this pull request has no baseline to compare.
+            manifest="$(jq -r --arg p "$package" '.packages[] | select(.name == $p) | .manifest_path' <<<"$metadata")"
+            if ! git cat-file -e "${BASE}:${manifest#"$PWD"/}" 2>/dev/null; then
+              echo "::notice::${package} is new in this pull request; no baseline to check."
+              continue
+            fi
             rc=0
             out="$(cargo semver-checks --package "$package" --baseline-rev "$BASE" 2>&1)" || rc=$?
             echo "$out"
             [[ $rc -eq 0 ]] && continue
-            if ! grep -qE 'semver requires new (major|minor) version' <<<"$out"; then
+            if grep -qE 'semver requires new major version' <<<"$out"; then
+              broken+=("$package")
+            elif grep -qE 'semver requires new minor version' <<<"$out"; then
+              # The unchanged version reads as a patch release, so compatible
+              # additions such as deprecations report "minor"; they pass.
+              echo "::notice::${package}: minor-level API change (compatible)."
+            else
               echo "::error::cargo-semver-checks failed for ${package} without reporting an API break; see the log."
               exit "$rc"
             fi
-            broken+=("$package")
           done
           [[ ${#broken[@]} -eq 0 ]] && exit 0
           echo "API break reported in: ${broken[*]}"
