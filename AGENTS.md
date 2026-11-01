@@ -345,7 +345,10 @@ Pull requests do not edit `CHANGELOG.md`; it is release-owned. The PR title
 (a Conventional Commit subject, which becomes the squash commit) and the PR
 body carry the change note. When consumers must act, mark the subject
 `type!:` or add a `## Breaking` or `## Upgrade` section to the body; the
-release draft lists those under breaking changes and upgrade.
+release draft lists those under breaking changes and upgrade. The CI `Semver`
+job runs `cargo-semver-checks` on the library crates against the pull request
+base; a reported break passes only with that marker and the `risk:breaking`
+label.
 
 ### Public hygiene
 
