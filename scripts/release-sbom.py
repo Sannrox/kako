@@ -18,6 +18,7 @@ import json
 import re
 import subprocess
 import sys
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -69,13 +70,17 @@ def python_components(requirements: str) -> list[dict]:
 
 def bom(meta: dict, requirements: str) -> dict:
     root, crates = cargo_components(meta)
-    return {
+    document = {
         "bomFormat": "CycloneDX",
         "specVersion": "1.5",
         "version": 1,
         "metadata": {"component": root},
         "components": sorted(crates + python_components(requirements), key=lambda c: c["bom-ref"]),
     }
+
+    canonical = json.dumps(document, sort_keys=True, separators=(",", ":"))
+    document["serialNumber"] = uuid.uuid5(uuid.NAMESPACE_URL, canonical).urn
+    return document
 
 
 def self_test() -> None:
@@ -97,6 +102,11 @@ def self_test() -> None:
     meta = {"workspace_members": [kako, core], "packages": packages, "resolve": {"nodes": nodes}}
     requirements = "numpy==2.1.0 \\\n    --hash=sha256:abc\nonnx_runtime==1.20.0 ; python_version >= '3.12'\nZope.Interface[x]==6.0\n# comment==1\n"
     out = bom(meta, requirements)
+    serial = out["serialNumber"]
+    assert serial.startswith("urn:uuid:")
+    assert uuid.UUID(serial.removeprefix("urn:uuid:")).version == 5
+    assert bom(meta, requirements)["serialNumber"] == serial
+    assert bom(meta, requirements + "another-package==1.0.0\n")["serialNumber"] != serial
     assert out["metadata"]["component"]["name"] == "kako"
     by_ref = {c["bom-ref"]: c for c in out["components"]}
     assert set(by_ref) == {
