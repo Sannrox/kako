@@ -1755,8 +1755,8 @@ dependencies = [
 
 [[package]]
 name = "kekkai"
-version = "0.1.0"
-source = "git+https://github.com/Sannrox/kekkai?rev=73e24f580ed6223b7e8395793e6f2317eb8edfd9#73e24f580ed6223b7e8395793e6f2317eb8edfd9"
+version = "0.2.3"
+source = "git+https://github.com/Sannrox/kekkai?tag=v0.2.3#57eae3144b343cc9f47dd42cf97154467386a5b8"
 dependencies = [
  "libc",
  "serde",
@@ -1924,7 +1924,7 @@ dependencies = [
 [[package]]
 name = "mizuchi"
 version = "0.1.0"
-source = "git+https://github.com/Sannrox/mizuchi?rev=1c2e13030bfd94f2cdea6ac8aec277f651391a47#1c2e13030bfd94f2cdea6ac8aec277f651391a47"
+source = "git+https://github.com/Sannrox/mizuchi?tag=v0.1.0#b24dc2314342ff88a9cf79470183e40b8aa0231a"
 dependencies = [
  "arrow 60.0.0",
  "mizuchi-core",
@@ -1932,14 +1932,12 @@ dependencies = [
  "mizuchi-io",
  "mizuchi-plan",
  "mizuchi-postgres",
- "object_store",
- "sqlparser",
 ]
 
 [[package]]
 name = "mizuchi-core"
 version = "0.1.0"
-source = "git+https://github.com/Sannrox/mizuchi?rev=1c2e13030bfd94f2cdea6ac8aec277f651391a47#1c2e13030bfd94f2cdea6ac8aec277f651391a47"
+source = "git+https://github.com/Sannrox/mizuchi?tag=v0.1.0#b24dc2314342ff88a9cf79470183e40b8aa0231a"
 dependencies = [
  "arrow 60.0.0",
 ]
@@ -1947,7 +1945,7 @@ dependencies = [
 [[package]]
 name = "mizuchi-exec"
 version = "0.1.0"
-source = "git+https://github.com/Sannrox/mizuchi?rev=1c2e13030bfd94f2cdea6ac8aec277f651391a47#1c2e13030bfd94f2cdea6ac8aec277f651391a47"
+source = "git+https://github.com/Sannrox/mizuchi?tag=v0.1.0#b24dc2314342ff88a9cf79470183e40b8aa0231a"
 dependencies = [
  "arrow 60.0.0",
  "hmac",
@@ -1965,7 +1963,7 @@ dependencies = [
 [[package]]
 name = "mizuchi-io"
 version = "0.1.0"
-source = "git+https://github.com/Sannrox/mizuchi?rev=1c2e13030bfd94f2cdea6ac8aec277f651391a47#1c2e13030bfd94f2cdea6ac8aec277f651391a47"
+source = "git+https://github.com/Sannrox/mizuchi?tag=v0.1.0#b24dc2314342ff88a9cf79470183e40b8aa0231a"
 dependencies = [
  "aes-gcm",
  "arrow 60.0.0",
@@ -1983,7 +1981,7 @@ dependencies = [
 [[package]]
 name = "mizuchi-plan"
 version = "0.1.0"
-source = "git+https://github.com/Sannrox/mizuchi?rev=1c2e13030bfd94f2cdea6ac8aec277f651391a47#1c2e13030bfd94f2cdea6ac8aec277f651391a47"
+source = "git+https://github.com/Sannrox/mizuchi?tag=v0.1.0#b24dc2314342ff88a9cf79470183e40b8aa0231a"
 dependencies = [
  "arrow 60.0.0",
  "mizuchi-core",
@@ -1994,7 +1992,7 @@ dependencies = [
 [[package]]
 name = "mizuchi-postgres"
 version = "0.1.0"
-source = "git+https://github.com/Sannrox/mizuchi?rev=1c2e13030bfd94f2cdea6ac8aec277f651391a47#1c2e13030bfd94f2cdea6ac8aec277f651391a47"
+source = "git+https://github.com/Sannrox/mizuchi?tag=v0.1.0#b24dc2314342ff88a9cf79470183e40b8aa0231a"
 dependencies = [
  "arrow 60.0.0",
  "mizuchi-core",
