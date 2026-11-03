@@ -30,8 +30,10 @@ kako-worker = { path = "crates/kako-worker" }
 kako-source-sekai = { path = "crates/kako-source-sekai" }
 arrow = { version = "60.0.0", default-features = false, features = ["csv"] }
 duckdb = { version = "=1.10506.0", default-features = false, features = ["bundled", "parquet"] }
-kekkai = { git = "https://github.com/Sannrox/kekkai", rev = "73e24f580ed6223b7e8395793e6f2317eb8edfd9", default-features = false, features = ["guest"] }
-mizuchi = { git = "https://github.com/Sannrox/mizuchi", rev = "1c2e13030bfd94f2cdea6ac8aec277f651391a47", default-features = false }
+# Signed release tags. Cargo does not check tag signatures and a tag can move,
+# so Cargo.lock holds the verified tag commit and every build uses --locked.
+kekkai = { git = "https://github.com/Sannrox/kekkai", tag = "v0.2.3", default-features = false, features = ["guest"] }
+mizuchi = { git = "https://github.com/Sannrox/mizuchi", tag = "v0.1.0", default-features = false }
 # Git pin until sekai-keys is on crates.io.
 sekai-keys = { git = "https://github.com/Sannrox/sekai-chisei.git", rev = "1b2e12789a2b360759a087252367cf4bc633caf0" }
 aes-gcm = "0.10"
