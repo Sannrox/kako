@@ -30,12 +30,17 @@ def self_test() -> None:
         "## [0.2.0] - 2026-10-30\n\n"
         "### Added\n\n"
         "- release workflow\n\n"
+        "## [0.2.0-rc.1] - 2026-10-29\n\n"
+        "- candidate\n\n"
         "## [0.1.0] - 2026-10-12\n\n"
         "First tagged release.\n"
     )
     body = notes_for(sample, "0.2.0")
     assert "release workflow" in body, body
     assert "First tagged release" not in body, body
+    # A release candidate has its own section; it never matches its final.
+    assert notes_for(sample, "0.2.0-rc.1") == "- candidate"
+    assert "candidate" not in body, body
     try:
         notes_for(sample, "9.9.9")
     except SystemExit as exc:

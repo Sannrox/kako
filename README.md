@@ -269,11 +269,11 @@ run receipt
 
 ## Releases
 
-A signed, annotated `v*` tag runs `.github/workflows/release.yml` and
-publishes a GitHub Release: the Linux runner binary, SQL and Python runtime
-images, a Python catalog archive that unpacks into `KAKO_PYTHON_IMAGES`, an
-SBOM, `SHA256SUMS`, the Tenkai release manifest `kako-release.json`, and
-artifact attestations. The same tag pushes `ghcr.io/sannrox/kako:<version>`
+A signed, annotated `v*` tag runs `.github/workflows/release.yml` from
+`main` for that tag and publishes a GitHub Release: the Linux runner binary,
+SQL and Python runtime images, a Python catalog archive that unpacks into
+`KAKO_PYTHON_IMAGES`, an SBOM, `SHA256SUMS`, the Tenkai release manifest
+`kako-release.json`, and artifact attestations. The same tag pushes `ghcr.io/sannrox/kako:<version>`
 (never `latest`). `deploy/tenkai.toml` is the Tenkai product entry. Crates
 stay unpublished while they depend on git pins
 ([ADR 0008](docs/decisions/0008-release-artifacts.md)). Cutting a tag is a
@@ -287,7 +287,8 @@ bash scripts/release-dry-run.sh --out dist --with-images --with-site-packages
 `--with-images` needs a container runtime. `--with-site-packages` installs
 the hashed lockfile into the catalog tree. `workflow_dispatch` and pull
 requests package artifacts without attesting or creating a GitHub Release.
-Attestations and the Release are tag-only (`v*`).
+Attestations and the Release need a `v*` tag; a `-rc.N` or `-beta.N` tag
+publishes a pre-release.
 `bash scripts/validate-release.sh` runs the release script self-tests.
 
 ## Runner pool

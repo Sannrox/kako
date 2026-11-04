@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Refuse a v* tag that is lightweight, unsigned, signed by a key outside
-# security/release-tag-fingerprints, on a commit outside the trusted branch
-# (or a release/v* branch), or whose version is not the workspace version in
+# security/release-tag-fingerprints, on a commit outside the trusted branch,
+# or whose version is not the workspace version in the tagged commit's
 # Cargo.toml. The key and fingerprints are read from the trusted ref, never
-# from the tagged commit, so a tag cannot bring its own signer. The v* tag
-# ruleset keeps the workflow itself reviewed. The release workflow runs
-# `verify` before packaging.
+# from the tagged commit, so a tag cannot bring its own signer. The release
+# workflow runs main's copy of this script, from main, before packaging.
 #
 # RELEASE_TRUST_REF names the trusted ref (default origin/main).
 #
@@ -54,11 +53,7 @@ verify_release_tag() {
   if [[ -n "$expected_commit" && "$peeled" != "$expected_commit" ]]; then
     fail "tag ${tag} resolves to ${peeled}, expected ${expected_commit}"
   fi
-  local branch on_branch=false
-  for branch in "$TRUST_REF" $(git for-each-ref --format='%(refname)' "refs/remotes/${TRUST_REF%%/*}/release/v*"); do
-    git merge-base --is-ancestor "$peeled" "$branch" 2>/dev/null && on_branch=true
-  done
-  [[ "$on_branch" == true ]] || fail "tag ${tag} is not on ${TRUST_REF} or a release/v* branch"
+  git merge-base --is-ancestor "$peeled" "$TRUST_REF" 2>/dev/null || fail "tag ${tag} is not on ${TRUST_REF}"
 
   raw="$(git verify-tag --raw "$tag" 2>&1)" || true
   # gpg still reports VALIDSIG for an expired or revoked key.
@@ -151,6 +146,21 @@ self_test() {
   (cd "$work" && expect_failure "does not match workspace version" v0.2.0 "$first")
 
   (cd "$work" && expect_failure "invalid release tag" v0.1 "$first")
+
+  # Release candidates: an rc tag equals an rc workspace version, and a final
+  # tag never releases an rc version.
+  local rc
+  printf '[workspace]\nmembers = []\n\n[workspace.package]\nversion = "0.3.0-rc.1"\n' >"${work}/Cargo.toml"
+  git -C "$work" commit -q -am rc
+  rc="$(git -C "$work" rev-parse HEAD)"
+  git -C "$work" tag -s v0.3.0-rc.1 -m rc "$rc"
+  (cd "$work" && bash "$SCRIPT_PATH" verify v0.3.0-rc.1 "$rc" >/dev/null)
+  git -C "$work" tag -s v0.3.0 -m "final on rc" "$rc"
+  (cd "$work" && expect_failure "does not match workspace version 0.3.0-rc.1" v0.3.0 "$rc")
+  (cd "$work" && expect_failure "invalid release tag" v0.3.0-rc "$rc")
+  # The release workflow passes the commit it will build; a tag for another
+  # commit is refused.
+  (cd "$work" && expect_failure "resolves to ${first}, expected ${rc}" v0.1.0 "$rc")
 
   # Revoking the key on the trusted ref rejects tags it signed earlier.
   # gpg prefixes the stored certificate's armor with ':' against accidental use.
