@@ -202,14 +202,21 @@ fn release_workflow_builds_signed_tag_artifacts() {
         "{yaml}"
     );
     assert!(yaml.contains("gh release create"), "{yaml}");
-    assert!(yaml.contains("tags:"), "{yaml}");
-    assert!(yaml.contains("v*"), "{yaml}");
+    // A v* tag push only dispatches release.yml on main for that tag.
+    let dispatch =
+        fs::read_to_string(workspace_root().join(".github/workflows/release-dispatch.yml"))
+            .unwrap();
+    assert!(dispatch.contains(r#"tags: ["v*"]"#), "{dispatch}");
+    assert!(
+        dispatch.contains("gh workflow run release.yml --ref main"),
+        "{dispatch}"
+    );
     assert!(yaml.contains("workflow_dispatch"), "{yaml}");
     assert!(yaml.contains("--version"), "{yaml}");
     assert!(yaml.contains("--with-site-packages"), "{yaml}");
     assert!(
-        yaml.contains("github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')"),
-        "attest and publish must be tag-only: {yaml}"
+        yaml.contains("if: needs.verify-tag.outputs.tag != ''"),
+        "attest and publish must run only for a verified tag: {yaml}"
     );
     assert!(
         yaml.contains("ghcr.io/sannrox/kako"),
@@ -231,8 +238,8 @@ fn release_workflow_builds_signed_tag_artifacts() {
         .find("actions/attest-build-provenance@")
         .expect("missing attest action");
     let tag_gate_before_attest = yaml[..attest_idx]
-        .rfind("startsWith(github.ref, 'refs/tags/v')")
-        .expect("attest job must sit behind the tag gate");
+        .rfind("if: needs.verify-tag.outputs.tag != ''")
+        .expect("attest job must sit behind the verified-tag gate");
     assert!(
         tag_gate_before_attest < attest_idx,
         "attestation must not run on pull_request"
