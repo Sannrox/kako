@@ -68,8 +68,12 @@ A re-run resumes the draft release: it deletes the draft's earlier assets and
 uploads the rebuilt ones. Every job that pushes the image, attests, or
 changes the release first refuses a release that is already published, and
 fails when the release cannot be read, so "Re-run failed jobs" on an old run
-cannot touch a published release either. Only one run per tag executes at a
-time, and a tagged run is never cancelled.
+cannot touch a published release either.
+
+Only one run per tag executes at a time, and a running tagged run is never
+cancelled. GitHub keeps only the newest waiting run per tag, so a further
+dispatch replaces a queued one; check
+`gh run list --workflow release.yml` before starting a retry.
 
 Pull requests and `gh workflow run release.yml --ref <branch>` without a tag
 are dry runs: they run the release script checks and packaging only, and

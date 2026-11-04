@@ -28,9 +28,10 @@ on:
         default: ""
         type: string
 
-# One run per tag: a later dispatch for the same tag waits for the running
-# one, and a tagged run is never cancelled. A new push to a pull request
-# cancels its stale dry run.
+# One run per tag at a time, and a running tagged run is never cancelled.
+# GitHub keeps only the newest waiting run per group, so a third dispatch for
+# the same tag replaces a queued one. A new push to a pull request cancels its
+# stale dry run.
 concurrency:
   group: release-${{ inputs.tag || github.ref }}
   cancel-in-progress: ${{ !inputs.tag }}
