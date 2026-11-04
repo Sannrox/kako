@@ -60,10 +60,16 @@ To retry a failed release, fix the workflow on `main` and run the same
 command for the same tag. A retry picks up fixes to `release.yml` and to the
 tag verifier only. Everything else (the release scripts, `CHANGELOG.md`, the
 Dockerfiles, and the sources) comes from the tagged commit, so a bug there
-needs a new rc or patch version. A re-run resumes the draft release and
-re-uploads its assets. It refuses a release that is already published, both
-before it builds and before it publishes. Only one run per tag executes at a
-time.
+needs a new rc or patch version. The release script checks in the run come
+from the tagged commit too; main's `release.yml` itself was checked by the
+pull request that changed it.
+
+A re-run resumes the draft release: it deletes the draft's earlier assets and
+uploads the rebuilt ones. Every job that pushes the image, attests, or
+changes the release first refuses a release that is already published, and
+fails when the release cannot be read, so "Re-run failed jobs" on an old run
+cannot touch a published release either. Only one run per tag executes at a
+time, and a tagged run is never cancelled.
 
 Pull requests and `gh workflow run release.yml --ref <branch>` without a tag
 are dry runs: they run the release script checks and packaging only, and

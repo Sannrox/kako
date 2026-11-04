@@ -43,7 +43,7 @@ grep -E '^  (push|release):|^[[:space:]]+tags:' "$workflow" >/dev/null &&
 # shellcheck disable=SC2016 # literal workflow text
 for needle in \
   'group: release-${{ inputs.tag || github.ref }}' \
-  'cancel-in-progress: false' \
+  'cancel-in-progress: ${{ !inputs.tag }}' \
   '[[ "$WORKFLOW_REF" == refs/heads/main ]]' \
   "ref: \${{ inputs.tag && format('refs/tags/{0}', inputs.tag) || '' }}" \
   'git fetch --force origin "refs/tags/${TAG}:refs/tags/${TAG}" "+refs/heads/main:refs/remotes/origin/main"' \
@@ -81,6 +81,32 @@ grep -E 'github\.sha|github\.ref_name|github\.event_name|GITHUB_SHA|GITHUB_REF' 
 grep -E -- '--latest( |$|")' "$workflow" >/dev/null && fail "${workflow} must never force a release to latest"
 (($(grep -c 'is already published; cut a new tag instead of re-running' "$workflow") >= 3)) ||
   fail "${workflow} must refuse a published release early, when drafting, and before publishing"
+# "Re-run failed jobs" reuses verify-tag's outputs, so every job that changes a
+# release, pushes an image, or mints attestations starts by refusing a
+# published release, before its first mutation.
+python3 - "$workflow" <<'PY_JOBS' || fail "${workflow} must refuse a published release before every upload, publish, push, or attestation"
+import re
+import sys
+
+body = open(sys.argv[1]).read().split("\njobs:\n", 1)[1]
+mutating = ("gh release upload", "gh release create", "gh release edit", "gh release delete-asset", "docker push", "actions/attest")
+guard = "- name: Refuse a published release"
+bad = []
+for block in re.split(r"(?m)^(?=  [a-z][a-z0-9-]*:\n)", body):
+    hits = [block.index(m) for m in mutating if m in block]
+    if hits and not (guard in block and block.index(guard) < min(hits)):
+        bad.append(block.split(":", 1)[0].strip())
+if bad:
+    sys.exit("unguarded jobs: " + ", ".join(bad))
+PY_JOBS
+grep -F '.isDraft 2>/dev/null' "$workflow" >/dev/null &&
+  fail "${workflow} published-release lookups must fail closed when gh errors"
+# shellcheck disable=SC2016 # literal workflow text
+(($(grep -cF 'elif [[ "$state" != *"release not found"* ]]; then' "$workflow") == $(grep -cF -- '- name: Refuse a published release' "$workflow"))) ||
+  fail "${workflow} every published-release guard must accept only a draft or release not found"
+# shellcheck disable=SC2016 # literal workflow text
+grep -F 'gh release delete-asset "$TAG" "$name" --yes' "$workflow" >/dev/null ||
+  fail "${workflow} must drop an earlier run's assets when it resumes a draft"
 sed -n '1,/^jobs:/p' "$workflow" | grep -E 'attestations: write|id-token: write|packages: write' >/dev/null &&
   fail "${workflow} must not grant write scopes at workflow level"
 grep -E ':latest\b|--tag[= ]latest' "$workflow" >/dev/null && fail "${workflow} must not produce a latest tag"

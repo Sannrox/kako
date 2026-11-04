@@ -28,10 +28,12 @@ on:
         default: ""
         type: string
 
-# One run per tag. A second dispatch for the same tag waits for the first.
+# One run per tag: a later dispatch for the same tag waits for the running
+# one, and a tagged run is never cancelled. A new push to a pull request
+# cancels its stale dry run.
 concurrency:
   group: release-${{ inputs.tag || github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ !inputs.tag }}
 
 permissions:
   contents: read
@@ -94,8 +96,10 @@ jobs:
           TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          if [[ "$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || true)" == false ]]; then
-            echo "release ${TAG} is already published; cut a new tag instead of re-running" >&2
+          if state="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>&1)"; then
+            [[ "$state" == true ]] || { echo "release ${TAG} is already published; cut a new tag instead of re-running" >&2; exit 1; }
+          elif [[ "$state" != *"release not found"* ]]; then
+            echo "cannot read release ${TAG}: ${state}" >&2
             exit 1
           fi
       - name: Resolve release commit
@@ -114,7 +118,9 @@ jobs:
             echo "prerelease=false" >>"$GITHUB_OUTPUT"
           fi
 
-  # The CI gate runs the tagged commit's own release checks.
+  # The CI gate runs the tagged commit's own release checks. Main's
+  # release.yml, which is what runs here, was gated by the pull request that
+  # changed it.
   scripts:
     name: Release scripts
     needs: verify-tag
@@ -176,6 +182,21 @@ jobs:
     outputs:
       image: ${{ steps.push.outputs.image }}
     steps:
+      # "Re-run failed jobs" reuses verify-tag's outputs, so this job checks
+      # again before it changes anything. Only a draft or no release passes.
+      - name: Refuse a published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.verify-tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if state="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>&1)"; then
+            [[ "$state" == true ]] || { echo "release ${TAG} is already published; cut a new tag instead of re-running" >&2; exit 1; }
+          elif [[ "$state" != *"release not found"* ]]; then
+            echo "cannot read release ${TAG}: ${state}" >&2
+            exit 1
+          fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: kako-release
@@ -212,6 +233,21 @@ jobs:
       provenance: ${{ steps.provenance.outputs.attestation-url }}
       sbom: ${{ steps.sbom.outputs.attestation-url }}
     steps:
+      # "Re-run failed jobs" reuses verify-tag's outputs, so this job checks
+      # again before it changes anything. Only a draft or no release passes.
+      - name: Refuse a published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.verify-tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if state="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>&1)"; then
+            [[ "$state" == true ]] || { echo "release ${TAG} is already published; cut a new tag instead of re-running" >&2; exit 1; }
+          elif [[ "$state" != *"release not found"* ]]; then
+            echo "cannot read release ${TAG}: ${state}" >&2
+            exit 1
+          fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: kako-release
@@ -258,6 +294,21 @@ jobs:
           fetch-tags: true
       - name: Require HEAD at the release commit
         run: test "$(git rev-parse HEAD)" = "$SHA"
+      # "Re-run failed jobs" reuses verify-tag's outputs, so this job checks
+      # again before it changes anything. Only a draft or no release passes.
+      - name: Refuse a published release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.verify-tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if state="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>&1)"; then
+            [[ "$state" == true ]] || { echo "release ${TAG} is already published; cut a new tag instead of re-running" >&2; exit 1; }
+          elif [[ "$state" != *"release not found"* ]]; then
+            echo "cannot read release ${TAG}: ${state}" >&2
+            exit 1
+          fi
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: kako-release
@@ -320,21 +371,22 @@ jobs:
           fi
           # A re-run after a partial failure resumes the draft. A published
           # release is immutable; never replace its assets.
-          draft="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>/dev/null || echo absent)"
-          case "$draft" in
-            true)
-              gh release upload "$TAG" "${files[@]}" --clobber
-              gh release edit "$TAG" --title "$TAG" --notes-file dist/RELEASE_NOTES.md --draft "${kind[@]}"
-              ;;
-            absent)
-              gh release create "$TAG" "${files[@]}" --draft --verify-tag "${kind[@]}" \
-                --title "$TAG" --notes-file dist/RELEASE_NOTES.md
-              ;;
-            *)
-              echo "release ${TAG} is already published; cut a new tag instead of re-running" >&2
-              exit 1
-              ;;
-          esac
+          if state="$(gh release view "$TAG" --json isDraft --jq .isDraft 2>&1)"; then
+            [[ "$state" == true ]] || { echo "release ${TAG} is already published; cut a new tag instead of re-running" >&2; exit 1; }
+            # Every run rebuilds every asset; drop the earlier run's so a
+            # stale or renamed asset is never published.
+            gh release view "$TAG" --json assets --jq '.assets[].name' | while IFS= read -r name; do
+              gh release delete-asset "$TAG" "$name" --yes
+            done
+            gh release upload "$TAG" "${files[@]}" --clobber
+            gh release edit "$TAG" --title "$TAG" --notes-file dist/RELEASE_NOTES.md --draft "${kind[@]}"
+          elif [[ "$state" == *"release not found"* ]]; then
+            gh release create "$TAG" "${files[@]}" --draft --verify-tag "${kind[@]}" \
+              --title "$TAG" --notes-file dist/RELEASE_NOTES.md
+          else
+            echo "cannot read release ${TAG}: ${state}" >&2
+            exit 1
+          fi
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
