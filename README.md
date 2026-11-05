@@ -1,8 +1,13 @@
 # kako (加工)
 
-A sandboxed data-transform runner. kako takes a job (SQL or Python plus input
-datasets), runs it in an isolated, short-lived child process, and returns the
-outputs together with a receipt describing exactly what ran.
+**Run untrusted SQL and Python data transforms in a sandbox and get a
+receipt for every run.**
+
+[![CI](https://img.shields.io/github/actions/workflow/status/Sannrox/kako/ci.yml?branch=main&label=ci)](https://github.com/Sannrox/kako/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Sannrox/kako)](https://github.com/Sannrox/kako/releases)
+[![License](https://img.shields.io/github/license/Sannrox/kako)](LICENSE)
+
+[Try it](#try-it) · [CLI](#cli) · [Engine bar](docs/engine-requirements.md) · [Streaming jobs](docs/streaming-jobs.md) · [Decisions](docs/decisions/README.md)
 
 > Status: SQL MVP plus opt-in Python, and streaming jobs v1. Local jobs run
 > DuckDB (default), opt-in mizuchi, or Python in a
@@ -22,25 +27,100 @@ outputs together with a receipt describing exactly what ran.
 > [ADR 0010](docs/decisions/0010-crate-graph.md), and
 > [ADR 0011](docs/decisions/0011-runner-pool-drain.md).
 
-## How it works
+Kako (加工, "processing") is a sandboxed data-transform runner. It takes a
+job (SQL or Python plus input datasets) from a job source, runs it in an
+isolated, short-lived child process, and returns the outputs together with
+a receipt describing exactly what ran.
 
-1. **Take a job** from a [job source](#job-sources).
-2. **Stage** the inputs into a per-run scratch directory.
-3. **Run** the code in a [kekkai](https://github.com/Sannrox/kekkai) sandbox:
-   no network, CPU and wall-clock limits, writes confined to the
-   scratch directory.
-4. **Hash** the outputs and build a receipt.
-5. **Report** the outputs and receipt back to the job source.
-6. **Clean up** the scratch directory and the process.
+- **Sandboxed by default.** Every run executes in a kekkai sandbox: no
+  network, writes confined to a per-run scratch directory, CPU, memory,
+  and wall-clock limits.
+- **Fail closed.** When the required isolation tier or a memory cap cannot
+  be applied, the run fails and says so. There is no silent downgrade.
+- **A receipt for every run.** Digests of inputs, code, and outputs, the
+  engine and its version, measured CPU and peak memory. `kako replay`
+  re-runs a pipeline exactly from those pins.
+- **Pluggable job sources.** A small `JobSource` trait decides what runs
+  and whether to retry; kako only executes. A local job file is
+  first-class.
+- **Engines earn their place.** SQL via DuckDB is the default; mizuchi
+  SQL, Python, and model scoring are opt-in behind a published bar
+  ([engine requirements](docs/engine-requirements.md)).
+- **Governed and multi-tenant.** Every job, receipt, and quota key carries
+  `tenant_id` and `namespace`; markings gate under-marked outputs, and
+  wrapped tenant keys seal outputs without key bytes entering the scratch
+  tree.
+
+## Try it
+
+From a fresh clone (the toolchain is pinned by `rust-toolchain.toml`):
+
+```bash
+git clone https://github.com/Sannrox/kako && cd kako
+cargo test --locked --workspace
+cargo run --locked -p kako -- doctor
+```
+
+Offline `cargo test` stays green on any host; no external system is
+needed. `kako doctor` prints the host capabilities and the sandbox backend
+a run would use. On a host without the Linux sandbox features it reports
+what is missing:
 
 ```text
-  ┌──────────────┐  next_job   ┌──────────────────────────────┐
-  │  job source  │────────────►│  kako runner                 │
-  │ (local, CLI, │             │   scratch dir ─► sandboxed   │
-  │  queue, ...) │◄────────────│   DuckDB / Python process    │
-  └──────────────┘  complete / └──────────────────────────────┘
-                    fail + receipt
+kako doctor
+backend_selected: none (sandbox backend linux_native cannot be applied: sandbox backend linux_native is supported only on Linux)
+rlimit: available
+landlock_abi: none
+seccomp: unavailable
+cgroup: unavailable
+linux_native_health: error sandbox backend linux_native is supported only on Linux
+userspace_health: error sandbox backend userspace is supported only on Linux
+rlimit_health: ok sandbox:   backend=rlimit cpu=None memory_mb=None user_processes=None (no filesystem or network rules)
 ```
+
+Running a job needs Linux: the default sandbox backend is kekkai
+`linux_native` (Landlock filesystem allowlist and seccomp network deny).
+On a Linux host, `kako run job.json --output ./out` writes the job's
+outputs and `receipt.json` into `./out`. On a host where the tier cannot
+be applied the same command fails closed:
+
+```text
+kako: demo: runner: sandbox backend linux_native cannot be applied: sandbox backend linux_native is supported only on Linux
+```
+
+See [CLI](#cli) for the job file format and the full command surface.
+
+## How it works
+
+```mermaid
+flowchart LR
+  S[job source] -->|next job| ST[stage inputs into per-run scratch]
+  ST --> X["kekkai sandbox: DuckDB / mizuchi / Python"]
+  X --> O[files under outputs/]
+  O --> H[hash outputs, build receipt]
+  H -->|complete / fail + receipt| S
+  H --> C[clean up scratch and process]
+```
+
+A **job** is SQL or Python plus named input datasets and expected outputs.
+A **job source** hands out jobs and receives results; it owns queueing,
+retries, and quotas, and kako never decides what runs
+([ADR 0004](docs/decisions/0004-quota-authority.md)). One execution of a
+job is a **run**: inputs are staged into a per-run scratch directory, an
+**engine** executes the code in a sandboxed child process (no network, CPU
+and wall-clock limits, writes confined to the scratch directory), outputs
+are hashed, the outputs and a **receipt** are reported back to the source,
+and the scratch directory and the process are cleaned up. The job's
+`isolation` field is a floor, not a hint: when the host cannot apply the
+required tier, the run fails closed
+([ADR 0009](docs/decisions/0009-isolation-tier.md)).
+
+**Why not a workflow orchestrator?** kako runs exactly one job per
+sandboxed child and reports back. Scheduling, triggers, dependency graphs,
+and retries belong to the job source or an orchestrator above it
+([ADR 0002](docs/decisions/0002-sandboxed-transform-runner.md)). Execution
+stays single-node; larger datasets are split by the job source
+([ADR 0007](docs/decisions/0007-single-node-execution.md)).
 
 ## CLI
 
@@ -57,6 +137,8 @@ kako serve --listen <addr>
 kako serve --listen <addr> job.json --output ./out
 kako serve --listen <addr> --hand-back
 ```
+
+### Run a job
 
 `kako doctor` prints host capabilities. `kako run` uses kekkai `linux_native`
 (Landlock filesystem allowlist and seccomp network deny) unless the job
@@ -106,6 +188,8 @@ local CLI fills `local` / `default` when the job file omits them, or the
 values from `--tenant` / `--namespace`. `--require-identity` is the
 multi-tenant mode: both fields must be present on the job file.
 
+### Validate and preview
+
 `kako validate` parses a `duckdb_sql` job file and runs the SQL in the
 sandbox over empty inputs that keep the column types a full run infers.
 Unknown columns, bad join keys and type errors fail with the
@@ -122,6 +206,8 @@ scan of a staged file under `inputs/` is refused rather than read past the
 sample. Neither command writes an output directory or calls a job source,
 and the scratch tree is removed. Both refuse other engines and encrypted
 jobs, whose sealed outputs must not leave as plaintext rows.
+
+### Replay
 
 `kako replay` re-runs a pipeline's steps exactly as an earlier run did,
 into an isolated branch ([ADR 0016](docs/decisions/0016-replay-jobs.md)):
@@ -165,6 +251,8 @@ may not be `main` or `master`, and no part of its directory may be a
 link. `--check` only reports. Steps do not feed
 each other: the job source stages every step's inputs at their pinned
 versions. Computing diffs is the job source's job.
+
+### Serve and drain
 
 `kako serve` claims from the job source, serves `GET /health`, `GET /ready`,
 and `GET /version`, and drains on SIGTERM: readiness goes false immediately,
@@ -322,7 +410,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 KAKO_CEILING_CUSTOMERS=2000,20000,100000 bash scripts/single-node-ceiling.sh
 ```
 
-The toolchain is pinned in `rust-toolchain.toml`.
+The toolchain is pinned in `rust-toolchain.toml`. Agent workflow and the
+full local gates are in [AGENTS.md](AGENTS.md); architecture decisions live
+in [docs/decisions/](docs/decisions/README.md).
 
 ## Security
 
