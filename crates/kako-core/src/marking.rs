@@ -202,6 +202,7 @@ mod tests {
             markings: labels.iter().map(|s| (*s).to_string()).collect(),
             column_markings: BTreeMap::new(),
             object_set: String::new(),
+            digest: None,
         }
     }
 
@@ -301,6 +302,7 @@ mod tests {
             markings: Vec::new(),
             column_markings: columns,
             object_set: String::new(),
+            digest: None,
         };
         let job = job_with(vec![input], vec!["out.csv".into()], LabelMap::new(), None);
         let lineage = Lineage {

@@ -375,6 +375,7 @@ mod tests {
                     markings: Vec::new(),
                     column_markings: Default::default(),
                     object_set: String::new(),
+                    digest: None,
                 },
                 Input {
                     name: "orders".into(),
@@ -382,6 +383,7 @@ mod tests {
                     markings: Vec::new(),
                     column_markings: Default::default(),
                     object_set: String::new(),
+                    digest: None,
                 },
             ],
             outputs: vec!["totals.csv".into()],
@@ -411,6 +413,7 @@ mod tests {
                 markings: Vec::new(),
                 column_markings: Default::default(),
                 object_set: String::new(),
+                digest: None,
             }],
             outputs: vec!["out.csv".into()],
             write_mode: WriteMode::Overwrite,

@@ -473,6 +473,7 @@ pub fn sample_claimed_job(scratch: &Path, runtime_id: &str) -> (Job, Fence) {
             markings: Vec::new(),
             column_markings: Default::default(),
             object_set: String::new(),
+            digest: None,
         }],
         outputs: vec!["out".into()],
         write_mode: WriteMode::Overwrite,

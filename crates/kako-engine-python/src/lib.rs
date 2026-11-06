@@ -412,6 +412,7 @@ mod tests {
                     markings: Vec::new(),
                     column_markings: Default::default(),
                     object_set: String::new(),
+                    digest: None,
                 },
                 Input {
                     name: "orders".into(),
@@ -419,6 +420,7 @@ mod tests {
                     markings: Vec::new(),
                     column_markings: Default::default(),
                     object_set: String::new(),
+                    digest: None,
                 },
             ])
             .unwrap();
@@ -694,6 +696,7 @@ def transform(inputs):
                     markings: Vec::new(),
                     column_markings: Default::default(),
                     object_set: String::new(),
+                    digest: None,
                 },
                 Input {
                     name: "orders".into(),
@@ -701,6 +704,7 @@ def transform(inputs):
                     markings: Vec::new(),
                     column_markings: Default::default(),
                     object_set: String::new(),
+                    digest: None,
                 },
             ])
             .unwrap();

@@ -88,6 +88,15 @@ impl Scratch {
             let file_name = format!("{}{ext}", input.name);
             let dest = self.inputs_dir().join(&file_name);
             stage_one(&input.path, &dest)?;
+            if let Some(declared) = &input.digest {
+                let staged_digest = crate::digest::hash_file(&dest)?;
+                if &staged_digest != declared {
+                    return Err(format!(
+                        "input `{}` digest mismatch: declared {}, staged {}",
+                        input.name, declared.0, staged_digest.0
+                    ));
+                }
+            }
             staged.push((input.name.clone(), PathBuf::from("inputs").join(&file_name)));
         }
         Ok(staged)
@@ -175,13 +184,7 @@ mod tests {
             assert!(scratch_path.is_dir());
             assert!(scratch.path().join("tmp").is_dir());
             let staged = scratch
-                .stage_inputs(&[Input {
-                    name: "orders".into(),
-                    path: src.clone(),
-                    markings: Vec::new(),
-                    column_markings: Default::default(),
-                    object_set: String::new(),
-                }])
+                .stage_inputs(&[Input::file("orders", src.clone())])
                 .unwrap();
             assert_eq!(staged[0].0, "orders");
             assert!(scratch.path().join("inputs/orders.csv").is_file());
@@ -206,15 +209,39 @@ mod tests {
         std::os::unix::fs::symlink(&real, &link).unwrap();
         let scratch = Scratch::create(parent.path(), "t2").unwrap();
         let err = scratch
-            .stage_inputs(&[Input {
-                name: "orders".into(),
-                path: link,
-                markings: Vec::new(),
-                column_markings: Default::default(),
-                object_set: String::new(),
-            }])
+            .stage_inputs(&[Input::file("orders", link)])
             .unwrap_err();
         assert!(err.contains("symlink"), "{err}");
+    }
+
+    #[test]
+    fn staging_refuses_a_digest_mismatch() {
+        let parent = tempfile::tempdir().unwrap();
+        let src_dir = tempfile::tempdir().unwrap();
+        let src = src_dir.path().join("in.csv");
+        fs::write(&src, "a,b\n1,2\n").unwrap();
+        let scratch = Scratch::create(parent.path(), "digest").unwrap();
+        let declared = crate::digest::hash_bytes(b"other");
+        let mut input = Input::file("orders", src);
+        input.digest = Some(declared.clone());
+        let err = scratch.stage_inputs(&[input]).unwrap_err();
+        assert!(
+            err.contains("digest mismatch") && err.contains(&declared.0),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn staging_accepts_a_matching_digest() {
+        let parent = tempfile::tempdir().unwrap();
+        let src_dir = tempfile::tempdir().unwrap();
+        let src = src_dir.path().join("in.csv");
+        let bytes = b"a,b\n1,2\n";
+        fs::write(&src, bytes).unwrap();
+        let scratch = Scratch::create(parent.path(), "digest-ok").unwrap();
+        let mut input = Input::file("orders", src);
+        input.digest = Some(crate::digest::hash_bytes(bytes));
+        scratch.stage_inputs(&[input]).unwrap();
     }
 
     #[cfg(unix)]
