@@ -98,6 +98,7 @@ mod tests {
                 markings: Vec::new(),
                 column_markings: Default::default(),
                 object_set: String::new(),
+                digest: None,
             }],
             outputs: vec!["totals.csv".into()],
             write_mode: WriteMode::Overwrite,

@@ -8,11 +8,11 @@ const USAGE: &str = "\
 kako: sandboxed data-transform runner
 
 USAGE:
-    kako run <job.json> [--output <dir>] [--tenant <id>] [--namespace <ns>] [--require-identity]
-    kako validate <job.json>
-    kako preview <job.json> [--rows <n>]
+    kako run <job.json> [--output <dir>] [--inputs-from <dir>] [--tenant <id>] [--namespace <ns>] [--require-identity]
+    kako validate <job.json> [--inputs-from <dir>]
+    kako preview <job.json> [--rows <n>] [--inputs-from <dir>]
     kako replay <replay.json> [--output <dir>] [--check]
-    kako serve --listen <addr> [--hand-back] [--idle-ms <n>] [<job.json>] [--output <dir>] [--tenant <id>] [--namespace <ns>] [--require-identity]
+    kako serve --listen <addr> [--hand-back] [--idle-ms <n>] [<job.json>] [--output <dir>] [--inputs-from <dir>] [--tenant <id>] [--namespace <ns>] [--require-identity]
     kako doctor
     kako [--version | --help]
 
@@ -21,6 +21,8 @@ outputs), runs it in a kekkai sandbox, and writes outputs plus receipt.json
 to the output directory (default: ./out). Jobs carry tenant_id and namespace
 (default local/default). --require-identity refuses a job file that omits
 either field. Python jobs set \"engine\": \"python\" and \"code\", and may pin \"runtime_image\".
+An input value may be a relative path or a sha256 digest of a prior output;
+--inputs-from names that prior run's output directory (repeatable).
 `kako validate` checks a SQL job file and runs the query in the
 sandbox over empty inputs typed as a full run types them, so unknown columns, join
 keys and type errors are reported with locations. `kako preview` runs a SQL
@@ -110,6 +112,7 @@ fn cmd_run(args: impl Iterator<Item = String>) -> Result<(), String> {
     let mut job_file: Option<PathBuf> = None;
     let mut output = PathBuf::from("out");
     let mut identity = kako::local::LocalIdentity::default();
+    let mut inputs_from = Vec::new();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -118,6 +121,12 @@ fn cmd_run(args: impl Iterator<Item = String>) -> Result<(), String> {
                     .next()
                     .ok_or_else(|| "missing value for --output".to_string())?;
                 output = PathBuf::from(dir);
+            }
+            "--inputs-from" => {
+                let dir = args
+                    .next()
+                    .ok_or_else(|| "missing value for --inputs-from".to_string())?;
+                inputs_from.push(PathBuf::from(dir));
             }
             "--tenant" => {
                 identity.tenant_id = args
@@ -140,8 +149,13 @@ fn cmd_run(args: impl Iterator<Item = String>) -> Result<(), String> {
         }
     }
     let job_file = job_file.ok_or_else(|| "missing job file".to_string())?;
-    let mut source = kako::local::LocalSource::from_job_file_with(&job_file, output, identity)
-        .map_err(|error| error.to_string())?;
+    let mut source = kako::local::LocalSource::from_job_file_with_stores(
+        &job_file,
+        output,
+        identity,
+        &inputs_from,
+    )
+    .map_err(|error| error.to_string())?;
     let scratch_parent = std::env::temp_dir();
     let config = kako::run::RunnerConfig::for_current_exe(scratch_parent)
         .map_err(|error| error.to_string())?;
@@ -155,31 +169,17 @@ fn cmd_run(args: impl Iterator<Item = String>) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_validate(mut args: impl Iterator<Item = String>) -> Result<(), String> {
-    let job_file = args.next().ok_or_else(|| "missing job file".to_string())?;
-    if let Some(extra) = args.next() {
-        return Err(format!("unexpected argument `{extra}`"));
-    }
-    let job = kako::local::load_job(Path::new(&job_file)).map_err(|error| error.to_string())?;
-    let config = kako::run::RunnerConfig::for_current_exe(std::env::temp_dir())
-        .map_err(|error| error.to_string())?;
-    kako::run::validate_job(&job, &config).map_err(|error| error.to_string())?;
-    println!("{job_file}: valid");
-    Ok(())
-}
-
-fn cmd_preview(args: impl Iterator<Item = String>) -> Result<(), String> {
+fn cmd_validate(args: impl Iterator<Item = String>) -> Result<(), String> {
     let mut job_file: Option<PathBuf> = None;
-    let mut rows = 100u64;
+    let mut inputs_from = Vec::new();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--rows" => {
-                rows = args
+            "--inputs-from" => {
+                let dir = args
                     .next()
-                    .ok_or_else(|| "missing value for --rows".to_string())?
-                    .parse()
-                    .map_err(|error| format!("--rows: {error}"))?;
+                    .ok_or_else(|| "missing value for --inputs-from".to_string())?;
+                inputs_from.push(PathBuf::from(dir));
             }
             s if s.starts_with('-') => return Err(format!("unknown flag `{s}`")),
             s => {
@@ -191,7 +191,55 @@ fn cmd_preview(args: impl Iterator<Item = String>) -> Result<(), String> {
         }
     }
     let job_file = job_file.ok_or_else(|| "missing job file".to_string())?;
-    let job = kako::local::load_job(&job_file).map_err(|error| error.to_string())?;
+    let job = kako::local::load_job_with_stores(
+        &job_file,
+        &kako::local::LocalIdentity::default(),
+        &inputs_from,
+    )
+    .map_err(|error| error.to_string())?;
+    let config = kako::run::RunnerConfig::for_current_exe(std::env::temp_dir())
+        .map_err(|error| error.to_string())?;
+    kako::run::validate_job(&job, &config).map_err(|error| error.to_string())?;
+    println!("{}: valid", job_file.display());
+    Ok(())
+}
+
+fn cmd_preview(args: impl Iterator<Item = String>) -> Result<(), String> {
+    let mut job_file: Option<PathBuf> = None;
+    let mut rows = 100u64;
+    let mut inputs_from = Vec::new();
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--rows" => {
+                rows = args
+                    .next()
+                    .ok_or_else(|| "missing value for --rows".to_string())?
+                    .parse()
+                    .map_err(|error| format!("--rows: {error}"))?;
+            }
+            "--inputs-from" => {
+                let dir = args
+                    .next()
+                    .ok_or_else(|| "missing value for --inputs-from".to_string())?;
+                inputs_from.push(PathBuf::from(dir));
+            }
+            s if s.starts_with('-') => return Err(format!("unknown flag `{s}`")),
+            s => {
+                if job_file.is_some() {
+                    return Err("multiple job files".into());
+                }
+                job_file = Some(PathBuf::from(s));
+            }
+        }
+    }
+    let job_file = job_file.ok_or_else(|| "missing job file".to_string())?;
+    let job = kako::local::load_job_with_stores(
+        &job_file,
+        &kako::local::LocalIdentity::default(),
+        &inputs_from,
+    )
+    .map_err(|error| error.to_string())?;
     let config = kako::run::RunnerConfig::for_current_exe(std::env::temp_dir())
         .map_err(|error| error.to_string())?;
     let preview = kako::run::preview_job(&job, &config, rows).map_err(|error| error.to_string())?;
@@ -252,6 +300,7 @@ fn cmd_serve(args: impl Iterator<Item = String>) -> Result<(), String> {
     let mut output = PathBuf::from("out");
     let mut output_set = false;
     let mut identity = kako::local::LocalIdentity::default();
+    let mut inputs_from = Vec::new();
     let mut args = args.peekable();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -281,6 +330,12 @@ fn cmd_serve(args: impl Iterator<Item = String>) -> Result<(), String> {
                 output = PathBuf::from(dir);
                 output_set = true;
             }
+            "--inputs-from" => {
+                let dir = args
+                    .next()
+                    .ok_or_else(|| "missing value for --inputs-from".to_string())?;
+                inputs_from.push(PathBuf::from(dir));
+            }
             "--tenant" => {
                 identity.tenant_id = args
                     .next()
@@ -302,8 +357,12 @@ fn cmd_serve(args: impl Iterator<Item = String>) -> Result<(), String> {
         }
     }
     let listen = listen.ok_or_else(|| "missing --listen".to_string())?;
-    if job_file.is_none() && (output_set || identity != kako::local::LocalIdentity::default()) {
-        return Err("job identity and --output require a job file".into());
+    if job_file.is_none()
+        && (output_set
+            || !inputs_from.is_empty()
+            || identity != kako::local::LocalIdentity::default())
+    {
+        return Err("job identity, --output, and --inputs-from require a job file".into());
     }
     let probes = std::sync::Arc::new(kako::pool::ProbeState::new(env!("CARGO_PKG_VERSION")));
     if job_file.is_none() {
@@ -335,9 +394,13 @@ fn cmd_serve(args: impl Iterator<Item = String>) -> Result<(), String> {
                 .map_err(|error| error.to_string())?;
         }
         Some(job_file) => {
-            let mut source =
-                kako::local::LocalSource::from_job_file_with(&job_file, output, identity)
-                    .map_err(|error| error.to_string())?;
+            let mut source = kako::local::LocalSource::from_job_file_with_stores(
+                &job_file,
+                output,
+                identity,
+                &inputs_from,
+            )
+            .map_err(|error| error.to_string())?;
             kako::pool::serve_source(&mut source, &config, &probes, &drain)
                 .map_err(|error| error.to_string())?;
         }

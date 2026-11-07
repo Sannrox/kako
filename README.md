@@ -127,6 +127,7 @@ stays single-node; larger datasets are split by the job source
 ```bash
 kako doctor
 kako run job.json --output ./out
+kako run job.json --inputs-from ./out
 kako run job.json --tenant local --namespace default
 kako run job.json --require-identity
 kako validate job.json
@@ -179,9 +180,16 @@ the scratch tree, the worker manifest, or the sandbox environment. A
 revoked key fails the job. See
 [ADR 0015](docs/decisions/0015-job-encryption.md).
 
-Input paths are relative to the job file. Each input is staged as a DuckDB
-view with that name. User SQL writes files under `outputs/`. kako copies those
-files and `receipt.json` into `--output` (default `./out`).
+Input paths are relative to the job file. An input may also be a `sha256:`
+digest of another job's output; pass `--inputs-from` with that run's output
+directory. Staging refuses a file that does not match the digest, so two
+receipts chain by digest equality
+([ADR 0018](docs/decisions/0018-chain-step-io.md)). kako still runs one job
+at a time; the caller orders the steps.
+
+Each input is staged as a DuckDB view with that name. User SQL writes files
+under `outputs/`. kako copies those files and `receipt.json` into `--output`
+(default `./out`).
 
 Every job, receipt, and quota key carries `tenant_id` and `namespace`. The
 local CLI fills `local` / `default` when the job file omits them, or the
@@ -320,8 +328,9 @@ to retry; kako only executes.
   the plane offers object-set work, and copies object markings onto the job
   as table-level labels. A claim whose object-set input is missing is
   refused. Fence loss aborts write-back. Drain can hand a claim back without
-  writing. Live proof against a plane is a later issue; this crate's default
-  tests use a fake claim client. The same crate runs streaming jobs under the
+  writing. Live isolated-process proof is the ignored `sekai_live` test
+  (`cargo test -p kako --features sekai -- --ignored`). Default tests use a
+  fake claim client. The same crate runs streaming jobs under the
   claim fence ([streaming-jobs.md](docs/streaming-jobs.md)).
 
 ## Receipts
@@ -340,8 +349,9 @@ Every run produces a receipt with:
 - start time and duration.
 
 A receipt is enough to check what produced an output and to rerun it.
-`kako_core::governed` maps it onto the Sekai isolated-process JobSpec and
-run receipt
+When job 2 names job 1's output digest as an input, job 2's input digest
+equals job 1's output digest. `kako_core::governed` maps it onto the Sekai
+isolated-process JobSpec and run receipt
 ([ADR 0012](docs/decisions/0012-governed-receipt-mapping.md),
 [governed-receipt.md](docs/governed-receipt.md)).
 

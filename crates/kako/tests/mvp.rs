@@ -127,6 +127,71 @@ fn cli_join_twice_same_output_digest() {
 }
 
 #[test]
+fn cli_chain_by_digest_refuses_a_tampered_input() {
+    if !linux_native_ready() {
+        return;
+    }
+    let exe = worker();
+    let dir = tempfile::tempdir().unwrap();
+    let job1 = join_job(dir.path());
+    let out1 = dir.path().join("out1");
+    let status = Command::new(&exe)
+        .arg("run")
+        .arg(&job1)
+        .arg("--output")
+        .arg(&out1)
+        .status()
+        .unwrap();
+    assert!(status.success(), "step 1 failed: {status}");
+    let r1: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(out1.join("receipt.json")).unwrap()).unwrap();
+    let digest = r1["outputs"]["totals.csv"].as_str().expect("output digest");
+
+    let job2 = dir.path().join("step2.json");
+    fs::write(
+        &job2,
+        serde_json::json!({
+            "id": "filter",
+            "sql": "COPY (SELECT * FROM totals ORDER BY customer_id) TO 'outputs/filtered.csv' (HEADER, DELIMITER ',');",
+            "inputs": {"totals": digest},
+            "outputs": ["filtered.csv"],
+            "timeout_ms": 30000
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let out2 = dir.path().join("out2");
+    let status = Command::new(&exe)
+        .arg("run")
+        .arg(&job2)
+        .arg("--output")
+        .arg(&out2)
+        .arg("--inputs-from")
+        .arg(&out1)
+        .status()
+        .unwrap();
+    assert!(status.success(), "step 2 failed: {status}");
+    let r2: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(out2.join("receipt.json")).unwrap()).unwrap();
+    assert_eq!(r2["inputs"]["totals"], r1["outputs"]["totals.csv"]);
+
+    fs::write(out1.join("totals.csv"), "tampered\n").unwrap();
+    let out3 = dir.path().join("out3");
+    let output = Command::new(&exe)
+        .arg("run")
+        .arg(&job2)
+        .arg("--output")
+        .arg(&out3)
+        .arg("--inputs-from")
+        .arg(&out1)
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "tampered input must fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("digest mismatch"), "{stderr}");
+}
+
+#[test]
 fn cli_mizuchi_join() {
     if !linux_native_ready() {
         return;

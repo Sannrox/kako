@@ -87,6 +87,7 @@ mod tests {
                 markings: Vec::new(),
                 column_markings: Default::default(),
                 object_set: String::new(),
+                digest: None,
             }])
             .unwrap();
         write_manifest(

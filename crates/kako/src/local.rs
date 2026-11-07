@@ -11,7 +11,8 @@ use serde::Deserialize;
 use crate::receipt;
 use crate::run::DEFAULT_WALL_CLOCK;
 use crate::{
-    Engine, Failure, Input, IsolationTier, Job, JobSource, Output, QuotaKey, Receipt, WriteMode,
+    Digest, Engine, Failure, Input, IsolationTier, Job, JobSource, Output, QuotaKey, Receipt,
+    WriteMode,
 };
 
 #[derive(Debug)]
@@ -109,7 +110,17 @@ impl LocalSource {
         output_dir: PathBuf,
         identity: LocalIdentity,
     ) -> Result<Self, LocalError> {
-        let job = load_job_with(job_file, &identity)?;
+        Self::from_job_file_with_stores(job_file, output_dir, identity, &[])
+    }
+
+    /// Load a job, resolving `sha256:` inputs from prior run output directories.
+    pub fn from_job_file_with_stores(
+        job_file: &Path,
+        output_dir: PathBuf,
+        identity: LocalIdentity,
+        inputs_from: &[PathBuf],
+    ) -> Result<Self, LocalError> {
+        let job = load_job_with(job_file, &identity, inputs_from)?;
         Ok(Self {
             job: Some(job),
             output_dir,
@@ -285,6 +296,77 @@ fn copy_regular_file(src: &Path, dest: &Path, output_dir: &Path) -> Result<(), L
     })
 }
 
+fn resolve_input_value(
+    name: &str,
+    value: &str,
+    job_dir: &Path,
+    inputs_from: &[PathBuf],
+) -> Result<(PathBuf, Option<Digest>), LocalError> {
+    if crate::digest::is_declared(value) {
+        let digest = crate::digest::parse(value).map_err(LocalError)?;
+        let path = lookup_digest(&digest, inputs_from)?;
+        return Ok((path, Some(digest)));
+    }
+    if !relative_leaf(value) {
+        return Err(LocalError(format!(
+            "input `{name}` path must be relative to the job file"
+        )));
+    }
+    Ok((job_dir.join(value), None))
+}
+
+fn lookup_digest(digest: &Digest, stores: &[PathBuf]) -> Result<PathBuf, LocalError> {
+    if stores.is_empty() {
+        return Err(LocalError(format!(
+            "input digest `{}` needs --inputs-from (a prior run's output directory)",
+            digest.0
+        )));
+    }
+    for store in stores {
+        let receipt_path = store.join("receipt.json");
+        let raw = fs::read_to_string(&receipt_path)
+            .map_err(|error| LocalError(format!("read {}: {error}", receipt_path.display())))?;
+        let stored = receipt::from_json(&raw).map_err(LocalError)?;
+        if let Some((name, _)) = stored.outputs.iter().find(|(_, output)| output == digest) {
+            if !relative_file_name(name) {
+                return Err(LocalError(format!(
+                    "input digest `{}` output name `{name}` must be a relative file name",
+                    digest.0
+                )));
+            }
+            let path = store.join(name);
+            match fs::symlink_metadata(&path) {
+                Ok(meta) if meta.file_type().is_symlink() => {
+                    return Err(LocalError(format!(
+                        "input digest `{}` must not resolve to a symlink: {}",
+                        digest.0,
+                        path.display()
+                    )));
+                }
+                Ok(meta) if meta.is_file() => return Ok(path),
+                Ok(_) => {
+                    return Err(LocalError(format!(
+                        "input digest `{}` is not a file: {}",
+                        digest.0,
+                        path.display()
+                    )));
+                }
+                Err(error) => {
+                    return Err(LocalError(format!(
+                        "input digest `{}` {}: {error}",
+                        digest.0,
+                        path.display()
+                    )));
+                }
+            }
+        }
+    }
+    Err(LocalError(format!(
+        "digest {} was not in any --inputs-from receipt",
+        digest.0
+    )))
+}
+
 fn relative_leaf(path: &str) -> bool {
     let path = Path::new(path);
     !path.as_os_str().is_empty() && path.components().all(|c| matches!(c, Component::Normal(_)))
@@ -297,10 +379,23 @@ fn relative_file_name(path: &str) -> bool {
 
 /// Parse a job JSON file. Input paths are relative to the file's directory.
 pub fn load_job(path: &Path) -> Result<Job, LocalError> {
-    load_job_with(path, &LocalIdentity::default())
+    load_job_with(path, &LocalIdentity::default(), &[])
 }
 
-fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalError> {
+/// Parse a job JSON file, resolving digest inputs from prior run output dirs.
+pub fn load_job_with_stores(
+    path: &Path,
+    identity: &LocalIdentity,
+    inputs_from: &[PathBuf],
+) -> Result<Job, LocalError> {
+    load_job_with(path, identity, inputs_from)
+}
+
+fn load_job_with(
+    path: &Path,
+    identity: &LocalIdentity,
+    inputs_from: &[PathBuf],
+) -> Result<Job, LocalError> {
     let raw = fs::read_to_string(path)
         .map_err(|error| LocalError(format!("read {}: {error}", path.display())))?;
     let parsed: JobFile = serde_json::from_str(&raw)
@@ -350,13 +445,8 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
     names.sort();
     for name in names {
         validate_name(&name)?;
-        let rel = &parsed.inputs[&name];
-        if !relative_leaf(rel) {
-            return Err(LocalError(format!(
-                "input `{name}` path must be relative to the job file"
-            )));
-        }
-        let input_path = base.join(rel);
+        let value = &parsed.inputs[&name];
+        let (input_path, digest) = resolve_input_value(&name, value, base, inputs_from)?;
         let markings = kako_core::marking::normalize(
             parsed
                 .input_markings
@@ -378,6 +468,7 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
             markings,
             column_markings,
             object_set: String::new(),
+            digest,
         });
     }
     let mut model = None;
@@ -431,6 +522,7 @@ fn load_job_with(path: &Path, identity: &LocalIdentity) -> Result<Job, LocalErro
             ),
             column_markings: Default::default(),
             object_set: String::new(),
+            digest: None,
         });
         if parsed
             .input_column_markings
@@ -816,6 +908,178 @@ mod tests {
         .unwrap();
         let err = load_job(&job_path).unwrap_err();
         assert!(err.0.contains("relative"), "{err}");
+    }
+
+    fn chain_receipt(output_name: &str, digest: Digest) -> Receipt {
+        Receipt {
+            job_id: "step1".into(),
+            tenant_id: "local".into(),
+            namespace: "default".into(),
+            inputs: Vec::new(),
+            code: crate::digest::hash_bytes(b"SELECT 1"),
+            engine_version: "duckdb 1.4.5".into(),
+            outputs: vec![(output_name.into(), digest)],
+            started_at: std::time::SystemTime::UNIX_EPOCH,
+            duration: Duration::from_millis(1),
+            cpu_usec: None,
+            memory_peak_bytes: None,
+            lineage: None,
+            runtime_image: None,
+            isolation: IsolationTier::LinuxNative,
+            credential_scope: None,
+            input_markings: Vec::new(),
+            output_markings: Vec::new(),
+            declassify: None,
+            key_ids: Vec::new(),
+            key_state: None,
+            model: None,
+        }
+    }
+
+    #[test]
+    fn load_job_resolves_digest_from_prior_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let prior = dir.path().join("step1");
+        fs::create_dir_all(&prior).unwrap();
+        let bytes = b"customer_id,total\n1,25\n";
+        fs::write(prior.join("totals.csv"), bytes).unwrap();
+        let digest = crate::digest::hash_bytes(bytes);
+        fs::write(
+            prior.join("receipt.json"),
+            receipt::to_json(&chain_receipt("totals.csv", digest.clone())).unwrap(),
+        )
+        .unwrap();
+        let job_path = dir.path().join("job.json");
+        let body = serde_json::json!({
+            "sql": "COPY (SELECT * FROM totals) TO 'outputs/out.csv' (HEADER);",
+            "inputs": {"totals": digest.0},
+            "outputs": ["out.csv"],
+        });
+        fs::write(&job_path, body.to_string()).unwrap();
+        let job = load_job_with_stores(
+            &job_path,
+            &LocalIdentity::default(),
+            std::slice::from_ref(&prior),
+        )
+        .unwrap();
+        assert_eq!(job.inputs[0].name, "totals");
+        assert_eq!(job.inputs[0].path, prior.join("totals.csv"));
+        assert_eq!(job.inputs[0].digest.as_ref(), Some(&digest));
+    }
+
+    #[test]
+    fn load_job_refuses_digest_without_a_prior_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let digest = crate::digest::hash_bytes(b"x");
+        let job_path = dir.path().join("job.json");
+        let body = serde_json::json!({
+            "sql": "SELECT 1",
+            "inputs": {"totals": digest.0},
+            "outputs": ["out.csv"],
+        });
+        fs::write(&job_path, body.to_string()).unwrap();
+        let err = load_job(&job_path).unwrap_err();
+        assert!(err.0.contains("--inputs-from"), "{err}");
+    }
+
+    #[test]
+    fn load_job_refuses_a_digest_missing_from_the_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let prior = dir.path().join("step1");
+        fs::create_dir_all(&prior).unwrap();
+        fs::write(prior.join("totals.csv"), b"ok\n").unwrap();
+        let digest = crate::digest::hash_bytes(b"ok\n");
+        fs::write(
+            prior.join("receipt.json"),
+            receipt::to_json(&chain_receipt("totals.csv", digest)).unwrap(),
+        )
+        .unwrap();
+        let job_path = dir.path().join("job.json");
+        let wanted = crate::digest::hash_bytes(b"other");
+        let body = serde_json::json!({
+            "sql": "SELECT 1",
+            "inputs": {"totals": wanted.0},
+            "outputs": ["out.csv"],
+        });
+        fs::write(&job_path, body.to_string()).unwrap();
+        let err = load_job_with_stores(&job_path, &LocalIdentity::default(), &[prior]).unwrap_err();
+        assert!(
+            err.0.contains("was not in any --inputs-from receipt"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn load_job_refuses_an_invalid_digest_spelling() {
+        let dir = tempfile::tempdir().unwrap();
+        let job_path = dir.path().join("job.json");
+        fs::write(
+            &job_path,
+            r#"{
+              "sql": "SELECT 1",
+              "inputs": {"in": "sha256:not-a-digest"},
+              "outputs": ["out.csv"]
+            }"#,
+        )
+        .unwrap();
+        let err = load_job(&job_path).unwrap_err();
+        assert!(err.0.contains("sha256:"), "{err}");
+    }
+
+    #[test]
+    fn staging_refuses_a_tampered_digest_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let prior = dir.path().join("step1");
+        fs::create_dir_all(&prior).unwrap();
+        let bytes = b"customer_id,total\n1,25\n";
+        fs::write(prior.join("totals.csv"), bytes).unwrap();
+        let digest = crate::digest::hash_bytes(bytes);
+        fs::write(
+            prior.join("receipt.json"),
+            receipt::to_json(&chain_receipt("totals.csv", digest.clone())).unwrap(),
+        )
+        .unwrap();
+        let job_path = dir.path().join("job.json");
+        let body = serde_json::json!({
+            "sql": "SELECT 1",
+            "inputs": {"totals": digest.0},
+            "outputs": ["out.csv"],
+        });
+        fs::write(&job_path, body.to_string()).unwrap();
+        let job = load_job_with_stores(
+            &job_path,
+            &LocalIdentity::default(),
+            std::slice::from_ref(&prior),
+        )
+        .unwrap();
+        fs::write(prior.join("totals.csv"), "tampered\n").unwrap();
+        let scratch = crate::stage::Scratch::create(dir.path(), "tamper").unwrap();
+        let err = scratch.stage_inputs(&job.inputs).unwrap_err();
+        assert!(err.contains("digest mismatch"), "{err}");
+    }
+
+    #[test]
+    fn lookup_refuses_a_parent_output_name_in_the_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        let prior = dir.path().join("step1");
+        fs::create_dir_all(&prior).unwrap();
+        let bytes = b"secret\n";
+        fs::write(dir.path().join("secret.csv"), bytes).unwrap();
+        let digest = crate::digest::hash_bytes(bytes);
+        fs::write(
+            prior.join("receipt.json"),
+            receipt::to_json(&chain_receipt("../secret.csv", digest.clone())).unwrap(),
+        )
+        .unwrap();
+        let job_path = dir.path().join("job.json");
+        let body = serde_json::json!({
+            "sql": "SELECT 1",
+            "inputs": {"totals": digest.0},
+            "outputs": ["out.csv"],
+        });
+        fs::write(&job_path, body.to_string()).unwrap();
+        let err = load_job_with_stores(&job_path, &LocalIdentity::default(), &[prior]).unwrap_err();
+        assert!(err.0.contains("relative file name"), "{err}");
     }
 
     #[test]

@@ -48,6 +48,7 @@ fn run(parent: &Path, data: &Path, query: &str, sql: &str, engine: Engine) -> Ve
             markings: Vec::new(),
             column_markings: Default::default(),
             object_set: String::new(),
+            digest: None,
         })
         .collect();
     let staged = scratch.stage_inputs(&inputs).unwrap();
