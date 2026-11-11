@@ -237,6 +237,7 @@ pub fn stage_claimed_inputs(
             markings,
             column_markings: Default::default(),
             object_set,
+            digest: None,
         });
     }
     for alias in declared_sets.keys() {

@@ -101,6 +101,23 @@ pub struct Input {
     /// Canonical object-set descriptor JSON when this input is an object
     /// set. Empty for a dataset input.
     pub object_set: String,
+    /// Declared content digest. When set, staging fails closed unless the
+    /// staged copy matches. `None` is a path-only input.
+    pub digest: Option<Digest>,
+}
+
+impl Input {
+    /// A named local file with no markings or declared digest.
+    pub fn file(name: impl Into<String>, path: PathBuf) -> Self {
+        Self {
+            name: name.into(),
+            path,
+            markings: Vec::new(),
+            column_markings: BTreeMap::new(),
+            object_set: String::new(),
+            digest: None,
+        }
+    }
 }
 
 /// A unit of work: code to run against named inputs.

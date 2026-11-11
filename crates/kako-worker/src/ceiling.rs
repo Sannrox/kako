@@ -72,6 +72,7 @@ fn measure(engine: Engine, customers: u32, src: &Path) -> Measurement {
                 markings: Vec::new(),
                 column_markings: Default::default(),
                 object_set: String::new(),
+                digest: None,
             },
             Input {
                 name: "orders".into(),
@@ -79,6 +80,7 @@ fn measure(engine: Engine, customers: u32, src: &Path) -> Measurement {
                 markings: Vec::new(),
                 column_markings: Default::default(),
                 object_set: String::new(),
+                digest: None,
             },
         ])
         .unwrap();

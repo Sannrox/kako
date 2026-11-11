@@ -22,6 +22,7 @@ Decisions that must outlive a single PR.
 | [0015](0015-job-encryption.md) | Job keys stay in the runner; outputs seal after the worker | Accepted |
 | [0016](0016-replay-jobs.md) | Replays run pinned steps into a branch and never substitute a pin | Accepted |
 | [0017](0017-streaming-checkpoints.md) | Streaming jobs checkpoint on the batch start position and resume from the receipt | Accepted |
+| [0018](0018-chain-step-io.md) | Jobs declare inputs by upstream output digest | Accepted |
 <!-- adr-index:end -->
 
 The index is generated from each ADR's heading and `Status:` line. Do not

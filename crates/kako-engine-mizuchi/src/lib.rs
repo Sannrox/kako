@@ -488,6 +488,7 @@ mod tests {
                     markings: Vec::new(),
                     column_markings: Default::default(),
                     object_set: String::new(),
+                    digest: None,
                 },
                 Input {
                     name: "orders".into(),
@@ -495,6 +496,7 @@ mod tests {
                     markings: Vec::new(),
                     column_markings: Default::default(),
                     object_set: String::new(),
+                    digest: None,
                 },
             ])
             .unwrap();
@@ -529,6 +531,7 @@ mod tests {
                     markings: Vec::new(),
                     column_markings: Default::default(),
                     object_set: String::new(),
+                    digest: None,
                 },
                 Input {
                     name: "orders".into(),
@@ -536,6 +539,7 @@ mod tests {
                     markings: Vec::new(),
                     column_markings: Default::default(),
                     object_set: String::new(),
+                    digest: None,
                 },
             ])
             .unwrap();
@@ -609,6 +613,7 @@ mod tests {
                 markings: Vec::new(),
                 column_markings: Default::default(),
                 object_set: String::new(),
+                digest: None,
             }])
             .unwrap();
         let first = run_copy_with_mode(&scratch, &staged, sql, WriteMode::Overwrite);
@@ -621,6 +626,7 @@ mod tests {
                 markings: Vec::new(),
                 column_markings: Default::default(),
                 object_set: String::new(),
+                digest: None,
             }])
             .unwrap();
         let second = run_copy_with_mode(&scratch2, &staged2, sql, WriteMode::Overwrite);
@@ -646,6 +652,7 @@ mod tests {
                 markings: Vec::new(),
                 column_markings: Default::default(),
                 object_set: String::new(),
+                digest: None,
             }])
             .unwrap();
         let error = run_sql(
@@ -672,6 +679,7 @@ mod tests {
                 markings: Vec::new(),
                 column_markings: Default::default(),
                 object_set: String::new(),
+                digest: None,
             }])
             .unwrap();
         let cancel = CancelToken::new();
@@ -712,6 +720,7 @@ mod tests {
                     markings: Vec::new(),
                     column_markings: Default::default(),
                     object_set: String::new(),
+                    digest: None,
                 },
                 Input {
                     name: "orders".into(),
@@ -719,6 +728,7 @@ mod tests {
                     markings: Vec::new(),
                     column_markings: Default::default(),
                     object_set: String::new(),
+                    digest: None,
                 },
             ])
             .unwrap();
@@ -840,6 +850,7 @@ mod tests {
                 markings: Vec::new(),
                 column_markings: Default::default(),
                 object_set: String::new(),
+                digest: None,
             }])
             .unwrap();
         let mut inputs = as_inputs(&staged);
@@ -874,6 +885,7 @@ mod tests {
                 markings: Vec::new(),
                 column_markings: Default::default(),
                 object_set: String::new(),
+                digest: None,
             }])
             .unwrap();
         let mut inputs2 = as_inputs(&staged2);
@@ -914,6 +926,7 @@ mod tests {
                     columns
                 },
                 object_set: String::new(),
+                digest: None,
             }],
             outputs: vec!["ssn.csv".into()],
             write_mode: WriteMode::Overwrite,
