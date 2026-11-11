@@ -14,7 +14,8 @@ This page is how a maintainer tags this repository.
 3. Land the release pull request: `[workspace.package] version` in
    `Cargo.toml`, `Cargo.lock`, `deploy/tenkai.toml`, and the CHANGELOG section
    move together. `bash scripts/validate-release.sh` checks the release path
-   without publishing.
+   without publishing, including that `deploy/tenkai.toml` ends with the
+   generated job-submission contract profile.
 
 ## Tag
 
