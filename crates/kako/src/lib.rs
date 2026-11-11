@@ -19,6 +19,7 @@ pub mod crypto;
 pub use kako_sandbox as sandbox;
 
 pub mod engine;
+pub mod job_contract;
 pub mod local;
 pub mod pool;
 pub mod replay;

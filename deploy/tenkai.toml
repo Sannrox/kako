@@ -31,3 +31,19 @@ exit 1
 [delivery]
 has_migration = false
 changes_identity_config = false
+
+# Contracts this release provides to dependents (Tenkai profile v2). The pin
+# is a digest of kako@<product.version>. The contract version is derived from
+# the job document API; `python3 scripts/tenkai-profile.py --check` refuses a
+# stale block.
+[compatibility]
+version = 2
+# Evidence binds one release digest; one day is Tenkai's maximum.
+max_evidence_age_ms = 86400000
+
+[compatibility.components.kako.pin]
+kind = "digest"
+value = "sha256:fc935b72c7f7967b5ea51112c4a4dbf6f19c701aae92d1b580adad0b08f60843"
+
+[compatibility.components.kako.provides]
+"kako.jobs" = "1.0.0"

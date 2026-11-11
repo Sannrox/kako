@@ -15,6 +15,8 @@ fail() {
 python3 scripts/changelog-notes.py --self-test
 python3 scripts/release-manifest.py --self-test
 python3 scripts/release-sbom.py --self-test
+python3 scripts/tenkai-profile.py --self-test
+python3 scripts/tenkai-profile.py --check
 bash scripts/verify-release-tag.sh self-test
 
 version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"

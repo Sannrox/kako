@@ -318,3 +318,105 @@ fn first_release_notes_and_tenkai_entry_match_workspace_version() {
         "ADR 0008 must name the GHCR SQL image"
     );
 }
+
+fn tenkai_profile_cmd() -> Command {
+    let mut cmd = Command::new("python3");
+    cmd.arg(workspace_root().join("scripts/tenkai-profile.py"));
+    cmd
+}
+
+fn tenkai_profile_stdout(args: &[&str]) -> String {
+    let output = tenkai_profile_cmd().args(args).output().unwrap();
+    assert!(
+        output.status.success(),
+        "tenkai-profile.py {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+#[test]
+fn committed_tenkai_product_matches_generated_v2_profile() {
+    let version = workspace_version();
+    let tenkai = fs::read_to_string(workspace_root().join("deploy/tenkai.toml")).unwrap();
+    kako::job_contract::check_tenkai_toml(&tenkai, &version).unwrap();
+
+    let contract = kako::job_contract::job_submission_contract().unwrap();
+    assert_eq!(contract.id, kako::job_contract::CONTRACT_ID);
+    assert!(
+        tenkai.contains("[compatibility]"),
+        "deploy/tenkai.toml must declare a compatibility profile"
+    );
+    assert!(
+        tenkai.contains("version = 2"),
+        "deploy/tenkai.toml must declare profile version 2"
+    );
+    assert!(
+        tenkai.contains(&format!("\"{}\" = \"{}\"", contract.id, contract.version)),
+        "deploy/tenkai.toml must provide {} at {}: {tenkai}",
+        contract.id,
+        contract.version
+    );
+
+    let printed = tenkai_profile_stdout(&["--print-profile"]);
+    assert_eq!(
+        printed,
+        kako::job_contract::compatibility_profile(&version).unwrap()
+    );
+    let check = tenkai_profile_cmd().arg("--check").output().unwrap();
+    assert!(
+        check.status.success(),
+        "tenkai-profile.py --check failed: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+}
+
+#[test]
+fn tenkai_profile_check_refuses_a_stale_product() {
+    let version = workspace_version();
+    let original = fs::read_to_string(workspace_root().join("deploy/tenkai.toml")).unwrap();
+    kako::job_contract::check_tenkai_toml(&original, &version).unwrap();
+    let contract = kako::job_contract::job_submission_contract().unwrap();
+    let dir = TempDir::new().unwrap();
+
+    let stale_version = original.replace(
+        &format!("\"{}\" = \"{}\"", contract.id, contract.version),
+        &format!("\"{}\" = \"0.0.1\"", contract.id),
+    );
+    let stale_id = original.replace(&format!("\"{}\"", contract.id), "\"kako.other\"");
+    let stale_profile = original.replace("version = 2", "version = 1");
+    for (name, body) in [
+        ("provides-version", stale_version),
+        ("contract-id", stale_id),
+        ("profile-version", stale_profile),
+    ] {
+        assert_ne!(body, original, "{name} mutation must change the product");
+        let error = kako::job_contract::check_tenkai_toml(&body, &version).unwrap_err();
+        assert!(
+            error.contains("must end with this compatibility profile"),
+            "{name}: {error}"
+        );
+        let path = dir.path().join(name);
+        fs::write(&path, &body).unwrap();
+        let output = tenkai_profile_cmd()
+            .arg("--check")
+            .arg("--file")
+            .arg(&path)
+            .output()
+            .unwrap();
+        assert!(
+            !output.status.success(),
+            "{name} must be refused by tenkai-profile.py --check"
+        );
+    }
+}
+
+#[test]
+fn job_document_fields_match_the_shipped_jobfile() {
+    let printed = tenkai_profile_stdout(&["--print-fields"]);
+    let (job, scoring) = printed.split_once("\n---\n").unwrap();
+    let job_fields: Vec<&str> = job.lines().collect();
+    let scoring_fields: Vec<&str> = scoring.trim_end().lines().collect();
+    assert_eq!(job_fields, kako::job_contract::JOB_DOCUMENT_FIELDS);
+    assert_eq!(scoring_fields, kako::job_contract::SCORING_DOCUMENT_FIELDS);
+}
