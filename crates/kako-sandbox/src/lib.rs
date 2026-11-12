@@ -5,13 +5,11 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use kekkai::{
-    Backend, CaptureKeep, CaptureLimits, CgroupLimits, ChildUsage, Health, Limits, Network,
-    Sandbox, Settings,
-};
+use kekkai::{Backend, CgroupLimits, ChildUsage, Health, Limits, Network, Sandbox, Settings};
 
 /// Resource usage kako records on a receipt. Translated from kekkai so
 /// callers do not name sandbox-crate types.
@@ -32,17 +30,14 @@ fn sandbox_usage(usage: ChildUsage) -> SandboxUsage {
 
 use kako_core::Failure;
 use kako_core::isolation::{self, IsolationTier};
+use kako_core::{CANCEL_FILE, CANCEL_GRACE, ENGINE_CANCELLED};
 
-/// Stdout/stderr cap for guest capture. The worker prints an engine version
-/// line; errors stay bounded so a noisy child cannot fill the parent.
-const GUEST_CAPTURE: CaptureLimits = CaptureLimits {
-    stdout_max: Some(4 * 1024 * 1024),
-    stderr_max: Some(4 * 1024 * 1024),
-    keep: CaptureKeep::Head,
-};
+/// After SIGKILL, the engine contract requires the child gone within this window.
+const KILL_REAP: Duration = Duration::from_secs(5);
 
-/// SIGTERM grace before SIGKILL on a guest wall-clock timeout.
-const GUEST_TERM_GRACE: Duration = Duration::from_secs(1);
+/// Kept stdout/stderr per stream. Bytes past this are drained so a noisy
+/// child cannot fill the runner.
+const CAPTURE_MAX: usize = 4 * 1024 * 1024;
 
 /// Isolation used for a job that omitted `isolation` (the `linux_native` floor).
 pub fn select_backend() -> Result<IsolationTier, Failure> {
@@ -314,6 +309,10 @@ pub(crate) fn stage_guest_worker(worker: &Path, scratch: &Path) -> Result<PathBu
 /// extra paths as kekkai `--readable` only (Python interpreter prefixes);
 /// the workspace is the per-run scratch directory. `apply()` is invalid for
 /// `userspace`; spawn goes through the guest helper.
+///
+/// `cancel`, when set, is the job-source abort: the runner signals cooperative
+/// cancel the same way a wall-clock timeout does, then falls back to kill.
+#[allow(clippy::too_many_arguments)]
 pub fn run_sandboxed(
     command: Command,
     scratch: &Path,
@@ -322,6 +321,7 @@ pub fn run_sandboxed(
     cpu_time_secs: Option<u64>,
     memory_bytes: Option<u64>,
     extra_readable: &[PathBuf],
+    cancel: Option<&AtomicBool>,
 ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>, SandboxUsage), Failure> {
     let backend = backend_for(isolation)?;
     run_sandboxed_on(
@@ -332,9 +332,11 @@ pub fn run_sandboxed(
         cpu_time_secs,
         memory_bytes,
         extra_readable,
+        cancel,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_sandboxed_on(
     mut command: Command,
     scratch: &Path,
@@ -343,9 +345,11 @@ fn run_sandboxed_on(
     cpu_time_secs: Option<u64>,
     memory_bytes: Option<u64>,
     extra_readable: &[PathBuf],
+    cancel: Option<&AtomicBool>,
 ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>, SandboxUsage), Failure> {
     Instant::now()
         .checked_add(wall_clock)
+        .and_then(|end| end.checked_add(CANCEL_GRACE))
         .ok_or_else(|| Failure::Runner("wall-clock timeout overflows the runner clock".into()))?;
     if matches!(backend, Backend::Userspace) && memory_bytes.is_some() {
         return Err(Failure::Runner(
@@ -382,9 +386,13 @@ fn run_sandboxed_on(
     command.env("TMP", &tmp);
     command.env("TEMP", &tmp);
     if matches!(backend, Backend::Userspace) {
-        return run_userspace(sandbox, command, wall_clock);
+        command = guest_command(&sandbox, &command)?;
+    } else {
+        sandbox
+            .apply(&mut command)
+            .map_err(|error| Failure::Runner(format!("sandbox cannot be applied: {error}")))?;
     }
-    run_in_process(sandbox, command, wall_clock)
+    spawn_and_wait(sandbox, command, scratch, wall_clock, cancel)
 }
 
 /// Drop the runner's inherited environment and keep the variables the caller
@@ -416,38 +424,38 @@ fn guest_readable_roots(extra: &[PathBuf]) -> Vec<PathBuf> {
     roots
 }
 
-fn run_userspace(
-    sandbox: Sandbox,
-    mut command: Command,
-    wall_clock: Duration,
-) -> Result<(ExitStatus, Vec<u8>, Vec<u8>, SandboxUsage), Failure> {
-    let (status, usage, stdout, stderr) = sandbox
-        .spawn_with_deadline_captured(&mut command, wall_clock, GUEST_TERM_GRACE, GUEST_CAPTURE)
-        .map_err(|error| {
-            Failure::Runner(format!(
-                "sandbox backend userspace cannot be applied: {error}"
-            ))
-        })?;
-    if usage.timed_out {
-        return Err(Failure::Limit(format!(
-            "wall-clock timeout after {}ms",
-            wall_clock.as_millis()
-        )));
+/// Rebuild `command` as the guest helper invocation. `apply()` is invalid
+/// for userspace; `Sandbox::command` returns the helper with a process group.
+fn guest_command(sandbox: &Sandbox, command: &Command) -> Result<Command, Failure> {
+    let envs: Vec<(OsString, OsString)> = command
+        .get_envs()
+        .filter_map(|(key, value)| Some((key.to_owned(), value?.to_owned())))
+        .collect();
+    let args: Vec<OsString> = command.get_args().map(ToOwned::to_owned).collect();
+    let cwd = command.get_current_dir().map(Path::to_path_buf);
+    let mut guest = sandbox.command(command.get_program()).map_err(|error| {
+        Failure::Runner(format!(
+            "sandbox backend userspace cannot be applied: {error}"
+        ))
+    })?;
+    guest.args(args);
+    if let Some(dir) = cwd {
+        guest.current_dir(dir);
     }
-    Ok((status, stdout.bytes, stderr.bytes, sandbox_usage(usage)))
+    guest.envs(envs);
+    Ok(guest)
 }
 
-fn run_in_process(
+fn spawn_and_wait(
     sandbox: Sandbox,
     mut command: Command,
+    scratch: &Path,
     wall_clock: Duration,
+    cancel: Option<&AtomicBool>,
 ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>, SandboxUsage), Failure> {
     let deadline = Instant::now()
         .checked_add(wall_clock)
         .ok_or_else(|| Failure::Runner("wall-clock timeout overflows the runner clock".into()))?;
-    sandbox
-        .apply(&mut command)
-        .map_err(|error| Failure::Runner(format!("sandbox cannot be applied: {error}")))?;
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
 
@@ -455,36 +463,25 @@ fn run_in_process(
         .spawn()
         .map_err(|error| Failure::Runner(format!("spawn worker: {error}")))?;
     let pid = child.id();
-    let mut stdout_pipe = child.stdout.take();
-    let mut stderr_pipe = child.stderr.take();
-    let stdout_thread = thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(mut pipe) = stdout_pipe.take() {
-            let _ = io::Read::read_to_end(&mut pipe, &mut buf);
-        }
-        buf
-    });
-    let stderr_thread = thread::spawn(move || {
-        let mut buf = Vec::new();
-        if let Some(mut pipe) = stderr_pipe.take() {
-            let _ = io::Read::read_to_end(&mut pipe, &mut buf);
-        }
-        buf
-    });
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_thread = thread::spawn(move || drain_pipe(stdout_pipe, CAPTURE_MAX));
+    let stderr_thread = thread::spawn(move || drain_pipe(stderr_pipe, CAPTURE_MAX));
     let status = loop {
         match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() >= deadline => {
-                sandbox.kill_process_group(Some(pid));
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = sandbox.finish();
-                let _ = stdout_thread.join();
-                let _ = stderr_thread.join();
-                return Err(Failure::Limit(format!(
-                    "wall-clock timeout after {}ms",
-                    wall_clock.as_millis()
-                )));
+            Ok(None) if Instant::now() >= deadline || cancel_requested(cancel) => {
+                let timed_out = Instant::now() >= deadline;
+                return finish_cooperative_or_kill(
+                    &sandbox,
+                    &mut child,
+                    pid,
+                    scratch,
+                    stdout_thread,
+                    stderr_thread,
+                    wall_clock,
+                    timed_out,
+                );
             }
             Ok(None) => thread::sleep(Duration::from_millis(20)),
             Err(error) => {
@@ -497,10 +494,120 @@ fn run_in_process(
             }
         }
     };
+    sandbox.kill_process_group(Some(pid));
     let usage = sandbox.finish();
     let stdout = stdout_thread.join().unwrap_or_default();
     let stderr = stderr_thread.join().unwrap_or_default();
     Ok((status, stdout, stderr, sandbox_usage(usage)))
+}
+
+fn drain_pipe(pipe: Option<impl io::Read>, max: usize) -> Vec<u8> {
+    let mut kept = Vec::new();
+    let Some(mut reader) = pipe else {
+        return kept;
+    };
+    let mut buf = [0u8; 8192];
+    loop {
+        match reader.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                if kept.len() < max {
+                    let take = n.min(max - kept.len());
+                    kept.extend_from_slice(&buf[..take]);
+                }
+            }
+        }
+    }
+    kept
+}
+
+fn cancel_requested(cancel: Option<&AtomicBool>) -> bool {
+    cancel.is_some_and(|flag| flag.load(Ordering::SeqCst))
+}
+
+fn worker_reported_cancel(status: ExitStatus, stdout: &[u8], stderr: &[u8]) -> bool {
+    if status.success() {
+        return false;
+    }
+    let err = String::from_utf8_lossy(stderr);
+    let out = String::from_utf8_lossy(stdout);
+    err.contains(ENGINE_CANCELLED) || out.contains(ENGINE_CANCELLED)
+}
+
+fn request_cooperative_cancel(scratch: &Path) {
+    let path = scratch.join(CANCEL_FILE);
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let _ = opts.open(&path);
+}
+
+fn deadline_limit(wall_clock: Duration, timed_out: bool) -> Failure {
+    if timed_out {
+        Failure::Limit(format!(
+            "wall-clock timeout after {}ms",
+            wall_clock.as_millis()
+        ))
+    } else {
+        Failure::Limit("cooperative cancel ignored; child killed".into())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_cooperative_or_kill(
+    sandbox: &Sandbox,
+    child: &mut std::process::Child,
+    pid: u32,
+    scratch: &Path,
+    stdout_thread: thread::JoinHandle<Vec<u8>>,
+    stderr_thread: thread::JoinHandle<Vec<u8>>,
+    wall_clock: Duration,
+    timed_out: bool,
+) -> Result<(ExitStatus, Vec<u8>, Vec<u8>, SandboxUsage), Failure> {
+    request_cooperative_cancel(scratch);
+    let grace_end = Instant::now() + CANCEL_GRACE;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                sandbox.kill_process_group(Some(pid));
+                let usage = sandbox.finish();
+                let stdout = stdout_thread.join().unwrap_or_default();
+                let stderr = stderr_thread.join().unwrap_or_default();
+                if worker_reported_cancel(status, &stdout, &stderr) {
+                    return Ok((status, stdout, stderr, sandbox_usage(usage)));
+                }
+                return Err(deadline_limit(wall_clock, timed_out));
+            }
+            Ok(None) if Instant::now() >= grace_end => break,
+            Ok(None) => thread::sleep(Duration::from_millis(20)),
+            Err(error) => {
+                sandbox.kill_process_group(Some(pid));
+                let _ = child.kill();
+                let _ = sandbox.finish();
+                let _ = stdout_thread.join();
+                let _ = stderr_thread.join();
+                return Err(Failure::Runner(format!("wait for worker: {error}")));
+            }
+        }
+    }
+    sandbox.kill_process_group(Some(pid));
+    let _ = child.kill();
+    let reap_end = Instant::now() + KILL_REAP;
+    while Instant::now() < reap_end {
+        if matches!(child.try_wait(), Ok(Some(_))) {
+            break;
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
+    let _ = child.wait();
+    let _ = sandbox.finish();
+    let _ = stdout_thread.join();
+    let _ = stderr_thread.join();
+    Err(deadline_limit(wall_clock, timed_out))
 }
 
 /// Exit code for `--internal-probe network`: 0 allowed, 2 denied, 1 other error.
@@ -533,6 +640,8 @@ pub fn probe_network_exit() -> i32 {
 mod tests {
     use super::*;
     use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
 
     #[test]
     fn guest_backend_type_is_nameable() {
@@ -637,6 +746,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .unwrap_err();
         assert!(
@@ -657,6 +767,7 @@ mod tests {
             None,
             Some(1024 * 1024),
             &[],
+            None,
         )
         .unwrap_err();
         assert!(
@@ -695,6 +806,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .expect("guest helper must spawn");
         let combined = format!(
@@ -728,6 +840,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .expect("guest helper must spawn");
         let combined = format!(
@@ -744,6 +857,37 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn captured_output_is_bounded() {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut command = Command::new("dd");
+        command.args(["if=/dev/zero", "bs=1024", "count=8192", "status=none"]);
+        let (status, stdout, stderr, _) = run_sandboxed_on(
+            command,
+            scratch.path(),
+            Backend::Rlimit,
+            Duration::from_secs(5),
+            None,
+            None,
+            &[],
+            None,
+        )
+        .expect("dd must finish");
+        assert!(status.success(), "{status:?}");
+        assert!(
+            stdout.len() <= CAPTURE_MAX,
+            "stdout kept {} bytes",
+            stdout.len()
+        );
+        assert!(
+            stderr.len() <= CAPTURE_MAX,
+            "stderr kept {} bytes",
+            stderr.len()
+        );
+        assert_eq!(stdout.len(), CAPTURE_MAX);
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn wall_clock_timeout_kills_a_child() {
         let scratch = tempfile::tempdir().unwrap();
         let mut command = Command::new("sleep");
@@ -756,11 +900,239 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .unwrap_err();
         assert!(
             matches!(error, Failure::Limit(ref message) if message.contains("timeout")),
             "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cooperative_cancel_returns_the_engine_report_without_kill() {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "while [ ! -f cancel ]; do sleep 0.05; done; printf 'limit: cancelled\\n' >&2; exit 3",
+        ]);
+        let started = Instant::now();
+        let (status, _, stderr, _) = run_sandboxed_on(
+            command,
+            scratch.path(),
+            Backend::Rlimit,
+            Duration::from_millis(400),
+            None,
+            None,
+            &[],
+            None,
+        )
+        .expect("cooperative child must exit on the cancel file");
+        assert_eq!(status.code(), Some(3), "{status:?}");
+        assert!(
+            status.signal().is_none(),
+            "cooperative path must not kill the child: {status:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&stderr).contains(ENGINE_CANCELLED),
+            "{}",
+            String::from_utf8_lossy(&stderr)
+        );
+        assert!(
+            started.elapsed() < KILL_REAP,
+            "cooperative cancel took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cooperative_cancel_reaps_background_children() {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "while [ ! -f cancel ]; do sleep 0.05; done; sleep 30 & printf 'limit: cancelled\\n' >&2; exit 3",
+        ]);
+        let started = Instant::now();
+        let (status, _, stderr, _) = run_sandboxed_on(
+            command,
+            scratch.path(),
+            Backend::Rlimit,
+            Duration::from_millis(400),
+            None,
+            None,
+            &[],
+            None,
+        )
+        .expect("cooperative child must exit on the cancel file");
+        assert_eq!(status.code(), Some(3), "{status:?}");
+        assert!(
+            String::from_utf8_lossy(&stderr).contains(ENGINE_CANCELLED),
+            "{}",
+            String::from_utf8_lossy(&stderr)
+        );
+        assert!(
+            started.elapsed() < KILL_REAP,
+            "background child blocked the runner for {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn successful_exit_with_cancel_marker_is_still_a_timeout() {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "while [ ! -f cancel ]; do sleep 0.05; done; printf 'limit: cancelled\\n' >&2; exit 0",
+        ]);
+        let error = run_sandboxed_on(
+            command,
+            scratch.path(),
+            Backend::Rlimit,
+            Duration::from_millis(400),
+            None,
+            None,
+            &[],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Failure::Limit(ref message) if message.contains("timeout")),
+            "{error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ignored_cancel_kills_the_child_within_five_seconds() {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut command = Command::new("sh");
+        command.args(["-c", "trap '' TERM; sleep 30"]);
+        let started = Instant::now();
+        let error = run_sandboxed_on(
+            command,
+            scratch.path(),
+            Backend::Rlimit,
+            Duration::from_millis(400),
+            None,
+            None,
+            &[],
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Failure::Limit(ref message) if message.contains("timeout")),
+            "{error}"
+        );
+        assert!(
+            started.elapsed() < KILL_REAP + Duration::from_secs(2),
+            "kill path took {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cooperative_cancel_on_selected_backend() {
+        let Ok(tier) = select_backend() else {
+            return;
+        };
+        let scratch = tempfile::tempdir().unwrap();
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "while [ ! -f cancel ]; do sleep 0.05; done; printf 'limit: cancelled\\n' >&2; exit 3",
+        ]);
+        let sh = PathBuf::from("/bin/sh");
+        let (status, _, stderr, _) = run_sandboxed(
+            command,
+            scratch.path(),
+            tier,
+            Duration::from_millis(400),
+            None,
+            None,
+            std::slice::from_ref(&sh),
+            None,
+        )
+        .expect("cooperative child must exit on the cancel file");
+        assert_eq!(status.code(), Some(3), "tier={tier} status={status:?}");
+        assert!(
+            status.signal().is_none(),
+            "tier={tier} killed the child: {status:?}"
+        );
+        assert!(
+            String::from_utf8_lossy(&stderr).contains(ENGINE_CANCELLED),
+            "tier={tier} stderr={}",
+            String::from_utf8_lossy(&stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn source_cancel_uses_the_cooperative_path() {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut command = Command::new("sh");
+        command.args([
+            "-c",
+            "while [ ! -f cancel ]; do sleep 0.05; done; printf 'limit: cancelled\\n' >&2; exit 3",
+        ]);
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let arm = std::sync::Arc::clone(&cancel);
+        let _arm = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(150));
+            arm.store(true, Ordering::SeqCst);
+        });
+        let (status, _, stderr, _) = run_sandboxed_on(
+            command,
+            scratch.path(),
+            Backend::Rlimit,
+            Duration::from_secs(30),
+            None,
+            None,
+            &[],
+            Some(cancel.as_ref()),
+        )
+        .expect("source cancel must reach the child");
+        assert_eq!(status.code(), Some(3), "{status:?}");
+        assert!(status.signal().is_none(), "{status:?}");
+        assert!(
+            String::from_utf8_lossy(&stderr).contains(ENGINE_CANCELLED),
+            "{}",
+            String::from_utf8_lossy(&stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancel_write_does_not_follow_a_symlink() {
+        let scratch = tempfile::tempdir().unwrap();
+        let victim_dir = tempfile::tempdir().unwrap();
+        let victim = victim_dir.path().join("secret");
+        fs::write(&victim, b"keep-me").unwrap();
+        std::os::unix::fs::symlink(&victim, scratch.path().join(CANCEL_FILE)).unwrap();
+        let mut command = Command::new("sleep");
+        command.arg("30");
+        let _ = run_sandboxed_on(
+            command,
+            scratch.path(),
+            Backend::Rlimit,
+            Duration::from_millis(400),
+            None,
+            None,
+            &[],
+            None,
+        );
+        assert_eq!(fs::read(&victim).unwrap(), b"keep-me");
+        assert!(
+            fs::symlink_metadata(scratch.path().join(CANCEL_FILE))
+                .unwrap()
+                .file_type()
+                .is_symlink()
         );
     }
 
@@ -776,6 +1148,7 @@ mod tests {
             None,
             None,
             &[],
+            None,
         )
         .unwrap_err();
         assert!(
@@ -800,6 +1173,7 @@ mod tests {
             None,
             Some(1024 * 1024),
             &[],
+            None,
         )
         .unwrap_err();
         assert!(

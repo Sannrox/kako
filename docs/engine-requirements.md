@@ -17,7 +17,7 @@ An engine is a worker inside the kekkai sandbox. It must:
 | Job I/O | Read staged inputs from the run scratch; write each named output under `outputs/`. |
 | Isolation | No network. Filesystem writes stay in the scratch tree (plus the sandbox temp dir). The job's `isolation` floor is enforced fail-closed ([ADR 0009](decisions/0009-isolation-tier.md)). |
 | Limits | Honor the thread cap and the memory cap the runner sets. Spill to `tmp/` inside scratch, or fail as `Failure::Limit`. Do not crash the host. |
-| Cancellation | Stop work when the runner kills the process group. After that signal, the child is gone within 5 seconds. |
+| Cancellation | Cooperative cancel when the engine exposes one (mizuchi `CancelToken`). The runner writes a scratch `cancel` file on timeout or a job-source abort and waits a grace window. If the engine returns cancelled, the run is a typed cancelled failure with the engine's report and the process is not killed. If the engine ignores the file, the runner kills the process group; the child is gone within 5 seconds. Engines without cooperative cancel stay on the kill path. |
 | Identity | Return a stable `engine_version` string for the receipt (name and version). |
 | Determinism | The same job bytes and input bytes produce the same output bytes, or a documented, tested equality rule. |
 
@@ -63,8 +63,9 @@ the host class (CPU count, memory) with the numbers.
   not a pass.
 - Threads: the engine does not create more worker threads than the cap.
 - Spill: temporary files go under the scratch `tmp/` directory.
-- Timeout: the existing wall-clock kill path remains the cancellation
-  mechanism until an engine exposes a cooperative cancel.
+- Timeout: the runner signals cooperative cancel first, then the wall-clock
+  kill path after a grace window. A cooperative stop is a typed cancelled
+  failure with the engine report; a kill is still `Failure::Limit` timeout.
 
 ## Lineage bar
 

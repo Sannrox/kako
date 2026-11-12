@@ -11,9 +11,9 @@ pub use kako_core::manifest;
 pub use kako_core::receipt;
 pub use kako_core::stage;
 pub use kako_core::{
-    ColumnMarking, DeclassifyDecision, Digest, Engine, Failure, Input, IsolationTier, Job,
-    JobKeyClaim, JobSource, Lineage, LineageRead, LineageWrite, Output, QuotaKey, Receipt,
-    WriteMode,
+    CANCEL_GRACE, ColumnMarking, DeclassifyDecision, Digest, ENGINE_CANCELLED, Engine, Failure,
+    Input, IsolationTier, Job, JobKeyClaim, JobSource, Lineage, LineageRead, LineageWrite, Output,
+    QuotaKey, Receipt, WriteMode,
 };
 pub mod crypto;
 pub use kako_sandbox as sandbox;

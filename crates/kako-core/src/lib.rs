@@ -304,6 +304,15 @@ pub struct Lineage {
     pub column_markings: Vec<ColumnMarking>,
 }
 
+/// Worker stderr when an engine stopped on cooperative cancel.
+pub const ENGINE_CANCELLED: &str = "limit: cancelled";
+
+/// Scratch file the runner writes to request cooperative cancel.
+pub const CANCEL_FILE: &str = "cancel";
+
+/// How long the runner waits after writing [`CANCEL_FILE`] before killing.
+pub const CANCEL_GRACE: Duration = Duration::from_secs(3);
+
 /// Why a job did not produce outputs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failure {
@@ -315,6 +324,8 @@ pub enum Failure {
     Runner(String),
     /// The job's data key was revoked before the worker started.
     KeyRevoked { dek_id: String, kek_id: String },
+    /// The engine stopped on cooperative cancel and returned this report.
+    Cancelled { report: String },
 }
 
 impl fmt::Display for Failure {
@@ -324,6 +335,7 @@ impl fmt::Display for Failure {
             Self::Limit(message) => write!(f, "limit: {message}"),
             Self::Runner(message) => write!(f, "runner: {message}"),
             Self::KeyRevoked { dek_id, .. } => write!(f, "key revoked: {dek_id}"),
+            Self::Cancelled { report } => write!(f, "cancelled: {report}"),
         }
     }
 }
@@ -424,5 +436,13 @@ mod tests {
         assert_eq!(key.namespace, "ns");
         assert!(QuotaKey::new("", "ns").unwrap_err().contains("tenant_id"));
         assert!(QuotaKey::new("t", "").unwrap_err().contains("namespace"));
+    }
+
+    #[test]
+    fn cancelled_failure_is_typed() {
+        let failure = Failure::Cancelled {
+            report: ENGINE_CANCELLED.into(),
+        };
+        assert_eq!(failure.to_string(), "cancelled: limit: cancelled");
     }
 }

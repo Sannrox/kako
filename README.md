@@ -275,7 +275,9 @@ stays behind the `sekai` feature and a later plane-proof issue.
 The job source owns queueing, quotas, and fair share
 ([ADR 0004](docs/decisions/0004-quota-authority.md)). kako enforces the
 per-run `timeout_ms`, optional `cpu_time_secs`, and optional `memory_bytes`
-it is given. A memory cap fails closed when the host cannot apply a
+it is given. A timeout (or job-source abort) writes a scratch cancel file for engines
+that expose cooperative cancel, then kills the process group if the child
+ignores it. A cooperative stop is recorded as a typed cancelled receipt. A memory cap fails closed when the host cannot apply a
 cgroup. Receipts record measured `cpu_usec` and `memory_peak_bytes` when
 the sandbox reports them.
 

@@ -8,12 +8,14 @@ use std::path::{Path, PathBuf};
 
 use arrow::csv::WriterBuilder;
 use mizuchi::{
-    CancelToken, CsvReadOptions, Error, ParquetReadOptions, PolicyContext, QueryReport, Session,
-    SessionConfig, VERSION,
+    CsvReadOptions, Error, ParquetReadOptions, PolicyContext, QueryReport, Session, SessionConfig,
+    VERSION,
 };
 
 use kako_core::manifest::StagedInput;
-use kako_core::{Lineage, LineageRead, LineageWrite, WriteMode};
+use kako_core::{ENGINE_CANCELLED, Lineage, LineageRead, LineageWrite, WriteMode};
+
+pub use mizuchi::CancelToken;
 
 /// `mizuchi <version>` of the linked engine, as receipts spell it.
 pub fn version() -> String {
@@ -27,12 +29,23 @@ pub fn execute(
     scratch: &Path,
     write_mode: WriteMode,
 ) -> Result<String, String> {
+    execute_cancel(sql, inputs, scratch, write_mode, CancelToken::new())
+}
+
+/// Run staged SQL with a caller-owned cancel token.
+pub fn execute_cancel(
+    sql: &str,
+    inputs: &[StagedInput],
+    scratch: &Path,
+    write_mode: WriteMode,
+    cancel: CancelToken,
+) -> Result<String, String> {
     execute_with(
         sql,
         inputs,
         scratch,
         SessionLimits::default(),
-        CancelToken::new(),
+        cancel,
         write_mode,
     )
 }
@@ -228,7 +241,7 @@ fn write_lineage(scratch: &Path, lineage: &Lineage) -> Result<(), String> {
 fn map_error(error: Error) -> String {
     match error {
         Error::Memory(reason) => format!("limit: memory: {reason}"),
-        Error::Cancelled => "limit: cancelled".into(),
+        Error::Cancelled => ENGINE_CANCELLED.into(),
         other => format!("sql: {other}"),
     }
 }
@@ -701,6 +714,50 @@ mod tests {
             WriteMode::Overwrite,
         )
         .unwrap_err();
+        assert!(
+            error.contains("limit:") && error.contains("cancelled"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn cancel_mid_query_is_a_limit() {
+        let parent = tempfile::tempdir().unwrap();
+        let src = tempfile::tempdir().unwrap();
+        let input = src.path().join("in.csv");
+        let mut csv = String::from("x\n");
+        for i in 0..4_000 {
+            csv.push_str(&format!("{i}\n"));
+        }
+        fs::write(&input, csv).unwrap();
+        let scratch = Scratch::create(parent.path(), "mizuchi-cancel-mid").unwrap();
+        let staged = scratch
+            .stage_inputs(&[Input {
+                name: "in".into(),
+                path: input,
+                markings: Vec::new(),
+                column_markings: Default::default(),
+                object_set: String::new(),
+                digest: None,
+            }])
+            .unwrap();
+        let cancel = CancelToken::new();
+        let cancel_thread = cancel.clone();
+        let inputs = as_inputs(&staged);
+        let scratch_path = scratch.path().to_path_buf();
+        let handle = std::thread::spawn(move || {
+            execute_with(
+                "COPY (SELECT count(*) AS n FROM in a CROSS JOIN in b) TO 'outputs/one.csv' (HEADER, DELIMITER ',');",
+                &inputs,
+                &scratch_path,
+                SessionLimits::default(),
+                cancel_thread,
+                WriteMode::Overwrite,
+            )
+        });
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        cancel.cancel();
+        let error = handle.join().expect("join").unwrap_err();
         assert!(
             error.contains("limit:") && error.contains("cancelled"),
             "{error}"
