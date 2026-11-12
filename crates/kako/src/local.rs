@@ -161,6 +161,13 @@ impl JobSource for LocalSource {
                 reject_symlink(&receipt_path)?;
                 fs::write(&receipt_path, json)?;
             }
+            Failure::Cancelled { report } => {
+                let receipt = cancelled_receipt(job, report);
+                let json = receipt::to_json(&receipt).map_err(LocalError)?;
+                let receipt_path = self.output_dir.join("receipt.json");
+                reject_symlink(&receipt_path)?;
+                fs::write(&receipt_path, json)?;
+            }
             _ => {
                 let _ = fs::remove_file(self.output_dir.join("receipt.json"));
             }
@@ -208,6 +215,34 @@ pub(crate) fn write_completion(
     fs::write(&receipt_path, json)?;
     let _ = fs::remove_file(output_dir.join("failure.txt"));
     Ok(())
+}
+
+/// `engine_version` holds the engine cancel report so this file is not a
+/// success receipt with empty outputs.
+fn cancelled_receipt(job: &Job, report: &str) -> Receipt {
+    Receipt {
+        job_id: job.id.clone(),
+        inputs: Vec::new(),
+        code: crate::digest::hash_bytes(job.code.as_bytes()),
+        engine_version: report.to_string(),
+        outputs: Vec::new(),
+        started_at: std::time::SystemTime::now(),
+        duration: std::time::Duration::from_millis(0),
+        tenant_id: job.tenant_id.clone(),
+        namespace: job.namespace.clone(),
+        cpu_usec: None,
+        memory_peak_bytes: None,
+        lineage: None,
+        runtime_image: None,
+        isolation: job.isolation,
+        credential_scope: None,
+        input_markings: Vec::new(),
+        output_markings: Vec::new(),
+        declassify: None,
+        key_ids: Vec::new(),
+        key_state: None,
+        model: None,
+    }
 }
 
 fn revoked_receipt(job: &Job, dek_id: &str, kek_id: &str) -> Receipt {
@@ -1440,6 +1475,41 @@ mod tests {
         source.fail(&job, &Failure::Job("nope".into())).unwrap();
         assert!(!out.join("receipt.json").exists());
         assert!(out.join("failure.txt").exists());
+    }
+
+    #[test]
+    fn fail_writes_a_cancelled_receipt() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("in.csv"), "a\n1\n").unwrap();
+        let job_path = dir.path().join("job.json");
+        fs::write(
+            &job_path,
+            r#"{
+              "id": "cancel-me",
+              "sql": "SELECT 1",
+              "inputs": {"in": "in.csv"},
+              "outputs": ["out.csv"]
+            }"#,
+        )
+        .unwrap();
+        let out = dir.path().join("out");
+        let mut source = LocalSource::from_job_file(&job_path, out.clone()).unwrap();
+        let job = source.next_job().unwrap().unwrap();
+        source
+            .fail(
+                &job,
+                &Failure::Cancelled {
+                    report: crate::ENGINE_CANCELLED.into(),
+                },
+            )
+            .unwrap();
+        let failure = fs::read_to_string(out.join("failure.txt")).unwrap();
+        assert!(failure.contains("cancelled:"), "{failure}");
+        let receipt = fs::read_to_string(out.join("receipt.json")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&receipt).unwrap();
+        assert_eq!(v["job_id"], "cancel-me");
+        assert_eq!(v["engine_version"], crate::ENGINE_CANCELLED);
+        assert_eq!(v["outputs"].as_object().map(|o| o.len()), Some(0));
     }
 
     #[test]

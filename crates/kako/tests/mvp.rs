@@ -352,6 +352,56 @@ fn timeout_kills_the_child_and_removes_scratch() {
 }
 
 #[test]
+fn mizuchi_timeout_is_typed_cancelled() {
+    if !linux_native_ready() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut csv = String::from("x\n");
+    for i in 0..4_000 {
+        csv.push_str(&format!("{i}\n"));
+    }
+    fs::write(dir.path().join("in.csv"), csv).unwrap();
+    let job_path = dir.path().join("slow.json");
+    fs::write(
+        &job_path,
+        r#"{
+          "id": "slow-mizuchi",
+          "engine": "mizuchi",
+          "sql": "COPY (SELECT count(*) AS n FROM in a CROSS JOIN in b) TO 'outputs/totals.csv' (HEADER, DELIMITER ',');",
+          "inputs": {"in": "in.csv"},
+          "outputs": ["totals.csv"],
+          "timeout_ms": 800
+        }"#,
+    )
+    .unwrap();
+    let scratch_parent = dir.path().join("scratch");
+    fs::create_dir_all(&scratch_parent).unwrap();
+    let out = dir.path().join("out");
+    let mut source = LocalSource::from_job_file(&job_path, out.clone()).unwrap();
+    let config = RunnerConfig {
+        worker: worker(),
+        scratch_parent: scratch_parent.clone(),
+        keys: None,
+    };
+    let finishes = run_source(&mut source, &config).unwrap();
+    match &finishes[0] {
+        JobFinish::Failed {
+            failure: Failure::Cancelled { report },
+            ..
+        } => assert!(
+            report.contains("cancelled") || report.contains("limit:"),
+            "{report}"
+        ),
+        other => panic!("expected typed cancelled, got {other:?}"),
+    }
+    assert!(scratch_leftovers(&scratch_parent).is_empty());
+    let reported = fs::read_to_string(out.join("failure.txt")).unwrap();
+    assert!(reported.contains("cancelled:"), "{reported}");
+    assert!(out.join("receipt.json").is_file());
+}
+
+#[test]
 fn job_error_removes_scratch() {
     if !linux_native_ready() {
         return;
@@ -418,6 +468,7 @@ fn network_from_the_child_is_denied_on_linux_native() {
         None,
         None,
         std::slice::from_ref(&worker),
+        None,
     )
     .unwrap();
     assert_eq!(

@@ -10,7 +10,7 @@ use crate::crypto::{KeyProvider, require_regular_output, seal_output, unwrap_job
 use crate::digest::{hash_bytes, hash_file};
 use crate::sandbox;
 use crate::stage::Scratch;
-use crate::{Engine, Failure, Job, JobSource, Output, QuotaKey, Receipt};
+use crate::{ENGINE_CANCELLED, Engine, Failure, Job, JobSource, Output, QuotaKey, Receipt};
 
 /// How the runner finds a worker binary and where it puts scratch trees.
 #[derive(Clone)]
@@ -311,6 +311,7 @@ fn execute(
         cpu_time_secs,
         job.memory_bytes,
         &extra_readable,
+        None,
     )?;
     if let Some(failure) = classify_worker(status, &stdout, &stderr, usage.oom_killed) {
         return Err(failure);
@@ -403,7 +404,12 @@ fn cpu_limit_secs(job: &Job) -> Result<u64, Failure> {
             ));
         }
         Some(cpu) => cpu,
-        None => job.wall_clock.saturating_mul(2),
+        // Default CPU must outlive wall-clock plus cancel grace; otherwise
+        // RLIMIT_CPU kills the child before a cooperative engine can stop.
+        None => job
+            .wall_clock
+            .saturating_mul(2)
+            .saturating_add(crate::CANCEL_GRACE),
     };
     Ok(cpu.as_secs().max(1))
 }
@@ -430,7 +436,9 @@ fn classify_worker(
         return None;
     }
     let body = format!("worker exited {status}: {err}{out}");
-    if status.code() == Some(3) || err.contains("limit:") || out.contains("limit:") {
+    if err.contains(ENGINE_CANCELLED) || out.contains(ENGINE_CANCELLED) {
+        Some(Failure::Cancelled { report: body })
+    } else if status.code() == Some(3) || err.contains("limit:") || out.contains("limit:") {
         Some(Failure::Limit(body))
     } else {
         Some(Failure::Job(body))
@@ -913,7 +921,7 @@ mod tests {
         assert_eq!(cpu_limit_secs(&job).unwrap(), 3);
         job.cpu_time = None;
         job.wall_clock = Duration::from_millis(500);
-        assert_eq!(cpu_limit_secs(&job).unwrap(), 1);
+        assert_eq!(cpu_limit_secs(&job).unwrap(), 4);
     }
 
     #[cfg(unix)]
@@ -957,6 +965,18 @@ mod tests {
             matches!(failure, Failure::Limit(ref message) if message.contains("oom")),
             "{failure}"
         );
+    }
+
+    #[test]
+    fn cooperative_cancel_report_is_typed_cancelled() {
+        let status = Command::new("sh").args(["-c", "exit 3"]).status().unwrap();
+        let failure = classify_worker(status, b"", b"limit: cancelled\n", false).unwrap();
+        match failure {
+            Failure::Cancelled { report } => {
+                assert!(report.contains(ENGINE_CANCELLED), "{report}");
+            }
+            other => panic!("expected cancelled, got {other:?}"),
+        }
     }
 
     #[test]
