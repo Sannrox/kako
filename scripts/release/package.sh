@@ -3,15 +3,18 @@
 #
 # Always writes the runner tarball, the Python catalog tree, and the SBOM
 # (kako.cdx.json). With --with-images, also builds and saves the SQL and
-# Python container images when docker is on PATH.
+# Python container images when docker is on PATH. A tagged run passes
+# --version, which must match Cargo.toml, and also writes RELEASE_NOTES.md
+# from that version's CHANGELOG.md section, so a missing section fails here,
+# before anything is pushed or attested.
 #
 # Usage:
-#   bash scripts/release-dry-run.sh --out dist
-#   bash scripts/release-dry-run.sh --out dist --skip-build --binary path/to/kako
-#   bash scripts/release-dry-run.sh --out dist --version 0.1.0 --with-images
+#   bash scripts/release/package.sh --out dist
+#   bash scripts/release/package.sh --out dist --skip-build --binary path/to/kako
+#   bash scripts/release/package.sh --out dist --version 0.1.0 --with-images
 set -euo pipefail
 
-root="$(cd "$(dirname "$0")/.." && pwd)"
+root="$(cd "$(dirname "$0")/../.." && pwd)"
 out=""
 skip_build=false
 with_images=false
@@ -58,12 +61,12 @@ out="$(cd "$out" && pwd)"
 
 cargo_version="$(sed -n 's/^version = "\(.*\)"/\1/p' "$root/Cargo.toml" | head -1)"
 [[ -n "$cargo_version" ]] || {
-  echo "release-dry-run: could not read workspace version" >&2
+  echo "package: could not read workspace version" >&2
   exit 1
 }
 if [[ -n "$version_override" ]]; then
   if [[ "$version_override" != "$cargo_version" ]]; then
-    echo "release-dry-run: --version $version_override does not match Cargo.toml $cargo_version" >&2
+    echo "package: --version $version_override does not match Cargo.toml $cargo_version" >&2
     exit 1
   fi
   version="$version_override"
@@ -81,20 +84,20 @@ checksum() {
 
 if [[ -z "$binary" ]]; then
   if [[ "$skip_build" == true ]]; then
-    echo "release-dry-run: --skip-build requires --binary" >&2
+    echo "package: --skip-build requires --binary" >&2
     exit 1
   fi
   (cd "$root" && cargo build --locked --release -p kako)
   binary="$root/target/release/kako"
 fi
 [[ -f "$binary" ]] || {
-  echo "release-dry-run: binary not found: $binary" >&2
+  echo "package: binary not found: $binary" >&2
   exit 1
 }
 
 triple="$(rustc -vV | sed -n 's/^host: //p')"
 [[ -n "$triple" ]] || {
-  echo "release-dry-run: could not read rustc host triple" >&2
+  echo "package: could not read rustc host triple" >&2
   exit 1
 }
 
@@ -109,12 +112,12 @@ bin_tar="$out/kako-${version}-${triple}.tar.gz"
 tar -C "$stage/bin" -czf "$bin_tar" kako
 
 [[ -f "$python_dir/requirements.txt" && -f "$python_dir/kako_run.py" && -f "$python_dir/Dockerfile" ]] || {
-  echo "release-dry-run: python dir needs requirements.txt, kako_run.py, Dockerfile" >&2
+  echo "package: python dir needs requirements.txt, kako_run.py, Dockerfile" >&2
   exit 1
 }
 lock_hex="$(checksum "$python_dir/requirements.txt" | awk '{print $1}')"
 [[ ${#lock_hex} -eq 64 ]] || {
-  echo "release-dry-run: could not hash python lockfile" >&2
+  echo "package: could not hash python lockfile" >&2
   exit 1
 }
 catalog="$stage/catalog"
@@ -130,11 +133,11 @@ tar -C "$catalog" -czf "$py_tar" current "$lock_hex"
 
 if [[ "$with_images" == true ]]; then
   command -v docker >/dev/null 2>&1 || {
-    echo "release-dry-run: --with-images requires docker" >&2
+    echo "package: --with-images requires docker" >&2
     exit 1
   }
   [[ -f "$sql_dockerfile" ]] || {
-    echo "release-dry-run: missing $sql_dockerfile" >&2
+    echo "package: missing $sql_dockerfile" >&2
     exit 1
   }
   sql_ctx="$stage/sql"
@@ -146,7 +149,11 @@ if [[ "$with_images" == true ]]; then
   docker save "kako-python:${version}" -o "$out/kako-python-image.tar"
 fi
 
-python3 "$root/scripts/release-sbom.py" "$out/kako.cdx.json" "$python_dir/requirements.txt" >/dev/null
+if [[ -n "$version_override" ]]; then
+  python3 "$root/scripts/release/notes.py" "$version" >"$out/RELEASE_NOTES.md"
+fi
+
+python3 "$root/scripts/release/sbom.py" "$out/kako.cdx.json" "$python_dir/requirements.txt" >/dev/null
 
 (
   cd "$out"
@@ -158,5 +165,5 @@ python3 "$root/scripts/release-sbom.py" "$out/kako.cdx.json" "$python_dir/requir
   checksum "${files[@]}" >SHA256SUMS
 )
 
-echo "release-dry-run: wrote $out"
+echo "package: wrote $out"
 ls -1 "$out"

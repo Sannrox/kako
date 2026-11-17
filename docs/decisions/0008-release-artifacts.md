@@ -37,7 +37,7 @@ pool's health and drain are a separate Issue.
 2. **Crates stay `publish = false`** until every runtime dependency is a
    registry crate. Flipping that bit while git pins remain would produce a
    crate that cannot be published.
-3. **Dry-run.** `scripts/release-dry-run.sh`, pull requests that touch the
+3. **Dry-run.** `scripts/release/package.sh`, pull requests that touch the
    release path, and `workflow_dispatch` build the same files and skip
    attestations and the GitHub Release. A real tag (`v*`) passes `--version`
    from the tag, which must match `Cargo.toml`, attests the files, and

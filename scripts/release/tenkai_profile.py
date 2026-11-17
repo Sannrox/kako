@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Generate and check the Tenkai compatibility profile kako publishes.
 
-    scripts/tenkai-profile.py --check
-    scripts/tenkai-profile.py --check --file PATH
-    scripts/tenkai-profile.py --print-profile
-    scripts/tenkai-profile.py --print-contract
-    scripts/tenkai-profile.py --print-fields
-    scripts/tenkai-profile.py --self-test
+    scripts/release/tenkai_profile.py --check
+    scripts/release/tenkai_profile.py --check --file PATH
+    scripts/release/tenkai_profile.py --print-profile
+    scripts/release/tenkai_profile.py --print-contract
+    scripts/release/tenkai_profile.py --print-fields
 
 The contract id is the job-submission surface dependents require. The
 semantic version is derived from the JSON job document in
@@ -26,7 +25,7 @@ CONTRACT_ID = "kako.jobs"
 PROFILE_VERSION = 2
 MAX_EVIDENCE_AGE_MS = 86_400_000
 COMPONENT = "kako"
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path(__file__).resolve().parents[2]
 LOCAL_RS = ROOT / "crates" / "kako" / "src" / "local.rs"
 PRODUCT = ROOT / "deploy" / "tenkai.toml"
 SEMVER = re.compile(r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)")
@@ -165,43 +164,6 @@ def generated_profile() -> str:
     return compatibility_profile(product_version(body), version, contract_id)
 
 
-def self_test() -> None:
-    source = LOCAL_RS.read_text()
-    job_fields, scoring_fields = job_document_fields(source)
-    version = contract_version(job_fields, scoring_fields)
-    if not SEMVER.fullmatch(version):
-        fail(f"self-test: unstable contract version {version}")
-    body = PRODUCT.read_text()
-    check_tenkai_toml(body, source)
-    profile = compatibility_profile(product_version(body), version)
-    if f'version = {PROFILE_VERSION}\n' not in profile:
-        fail("self-test: generated profile is not v2")
-    if f'"{CONTRACT_ID}" = "{version}"' not in profile:
-        fail("self-test: generated profile missing the job-submission contract")
-
-    try:
-        contract_version(job_fields + ("extra",), scoring_fields)
-    except SystemExit:
-        pass
-    else:
-        fail("self-test: extra job document field must be unknown")
-
-    stand_in = body
-    mutated = [
-        stand_in.replace(f'"{CONTRACT_ID}" = "{version}"', f'"{CONTRACT_ID}" = "0.0.1"'),
-        stand_in.replace(f'"{CONTRACT_ID}"', '"kako.other"'),
-        stand_in.replace("version = 2", "version = 1"),
-    ]
-    for stale in mutated:
-        if stale == stand_in:
-            fail("self-test: mutation did not change the product")
-        try:
-            check_tenkai_toml(stale, source)
-        except SystemExit:
-            continue
-        fail("self-test: stale product must be refused")
-
-
 def main(argv: list[str]) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     mode = parser.add_mutually_exclusive_group(required=True)
@@ -209,16 +171,8 @@ def main(argv: list[str]) -> None:
     mode.add_argument("--print-profile", action="store_true")
     mode.add_argument("--print-contract", action="store_true")
     mode.add_argument("--print-fields", action="store_true")
-    mode.add_argument("--self-test", action="store_true")
     parser.add_argument("--file", type=pathlib.Path)
     args = parser.parse_args(argv)
-    if args.self_test:
-        if args.file:
-            parser.error("--self-test does not take --file")
-        self_test()
-        contract_id, version = job_submission_contract()
-        print(f"tenkai-profile: {contract_id} {version} ok")
-        return
     if args.print_fields:
         job_fields, scoring_fields = job_document_fields()
         print("\n".join(job_fields))
