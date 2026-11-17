@@ -8,8 +8,7 @@ runtime/python/requirements.txt), which ship in the Python runtime image and
 catalog.
 
 Usage:
-  release-sbom.py OUT [REQUIREMENTS]
-  release-sbom.py --self-test
+  sbom.py OUT [REQUIREMENTS]
 """
 
 from __future__ import annotations
@@ -21,7 +20,7 @@ import sys
 import uuid
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parents[2]
 # The release workflow builds the runner on this target only.
 TARGET = "x86_64-unknown-linux-gnu"
 REQUIREMENT_RE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^\]]*\])?==([^\s;\\]+)", re.M)
@@ -83,56 +82,9 @@ def bom(meta: dict, requirements: str) -> dict:
     return document
 
 
-def self_test() -> None:
-    def dep(pkg: str, *kinds: str | None) -> dict:
-        return {"pkg": pkg, "dep_kinds": [{"kind": k, "target": None} for k in kinds]}
-
-    kako, core = "path+file:///w/crates/kako#0.1.0", "path+file:///w/crates/kako-core#0.1.0"
-    packages = [
-        {"id": kako, "name": "kako", "version": "0.1.0", "license": "Apache-2.0"},
-        {"id": core, "name": "kako-core", "version": "0.1.0"},
-        {"id": "r#serde@1.0.0", "name": "serde", "version": "1.0.0", "license": "MIT OR Apache-2.0"},
-        {"id": "r#memchr@2.0.0", "name": "memchr", "version": "2.0.0", "license": "MIT/Unlicense"},
-        {"id": "r#proptest@1.0.0", "name": "proptest", "version": "1.0.0", "license": "MIT"},
-    ]
-    nodes = [
-        {"id": kako, "deps": [dep(core, None), dep("r#memchr@2.0.0", "build"), dep("r#proptest@1.0.0", "dev")]},
-        {"id": core, "deps": [dep("r#serde@1.0.0", None, "dev")]},
-    ] + [{"id": p["id"], "deps": []} for p in packages[2:]]
-    meta = {"workspace_members": [kako, core], "packages": packages, "resolve": {"nodes": nodes}}
-    requirements = "numpy==2.1.0 \\\n    --hash=sha256:abc\nonnx_runtime==1.20.0 ; python_version >= '3.12'\nZope.Interface[x]==6.0\n# comment==1\n"
-    out = bom(meta, requirements)
-    serial = out["serialNumber"]
-    assert serial.startswith("urn:uuid:")
-    assert uuid.UUID(serial.removeprefix("urn:uuid:")).version == 5
-    assert bom(meta, requirements)["serialNumber"] == serial
-    assert bom(meta, requirements + "another-package==1.0.0\n")["serialNumber"] != serial
-    assert out["metadata"]["component"]["name"] == "kako"
-    by_ref = {c["bom-ref"]: c for c in out["components"]}
-    assert set(by_ref) == {
-        "pkg:cargo/serde@1.0.0",
-        "pkg:cargo/memchr@2.0.0",
-        "pkg:pypi/numpy@2.1.0",
-        "pkg:pypi/onnx-runtime@1.20.0",
-        "pkg:pypi/zope-interface@6.0",
-    }, set(by_ref)
-    assert by_ref["pkg:cargo/serde@1.0.0"]["licenses"] == [{"expression": "MIT OR Apache-2.0"}]
-    assert by_ref["pkg:cargo/memchr@2.0.0"]["licenses"] == [{"expression": "MIT OR Unlicense"}]
-    try:
-        bom({"workspace_members": [], "packages": [], "resolve": {"nodes": []}}, "")
-    except SystemExit as exc:
-        assert "kako package" in str(exc)
-    else:
-        raise AssertionError("expected missing kako package to fail")
-    print("release-sbom self-test passed")
-
-
 def main(argv: list[str]) -> None:
-    if argv == ["--self-test"]:
-        self_test()
-        return
     if len(argv) not in (1, 2):
-        raise SystemExit("usage: release-sbom.py OUT [REQUIREMENTS]")
+        raise SystemExit("usage: sbom.py OUT [REQUIREMENTS]")
     meta = json.loads(
         subprocess.check_output(
             ["cargo", "metadata", "--locked", "--format-version", "1", "--filter-platform", TARGET], cwd=ROOT, text=True

@@ -13,9 +13,10 @@ This page is how a maintainer tags this repository.
    not edit `CHANGELOG.md` otherwise.
 3. Land the release pull request: `[workspace.package] version` in
    `Cargo.toml`, `Cargo.lock`, `deploy/tenkai.toml`, and the CHANGELOG section
-   move together. `bash scripts/validate-release.sh` checks the release path
-   without publishing, including that `deploy/tenkai.toml` ends with the
-   generated job-submission contract profile.
+   move together. The release tests (`python3 -m unittest discover -s tests -t .`)
+   and `cargo test` check the release path without publishing, including
+   that `deploy/tenkai.toml` ends with the generated job-submission contract
+   profile.
 
 ## Tag
 
@@ -61,8 +62,8 @@ To retry a failed release, fix the workflow on `main` and run the same
 command for the same tag. A retry picks up fixes to `release.yml` and to the
 tag verifier only. Everything else (the release scripts, `CHANGELOG.md`, the
 Dockerfiles, and the sources) comes from the tagged commit, so a bug there
-needs a new rc or patch version. The release script checks in the run come
-from the tagged commit too; main's `release.yml` itself was checked by the
+needs a new rc or patch version. The release tests in the run come from the
+tagged commit too; main's `release.yml` itself was checked by the
 pull request that changed it.
 
 A re-run resumes the draft release: it deletes the draft's earlier assets and
@@ -77,7 +78,7 @@ dispatch replaces a queued one; check
 `gh run list --workflow release.yml` before starting a retry.
 
 Pull requests and `gh workflow run release.yml --ref <branch>` without a tag
-are dry runs: they run the release script checks and packaging only, and
+are dry runs: they run the release tests and packaging only, and
 never push an image, attest, or touch a GitHub Release.
 
 ## What the tag runs
@@ -85,17 +86,19 @@ never push an image, attest, or touch a GitHub Release.
 `.github/workflows/release.yml`, from `main`:
 
 1. Checks out the tag and fetches the annotated tag object. Main's
-   `scripts/verify-release-tag.sh` refuses a lightweight or unsigned tag, a
+   `scripts/release/verify-tag.sh` refuses a lightweight or unsigned tag, a
    signer outside the fingerprint list, an expired or revoked key, or a tag
    that is not the tagged commit's workspace version. The key and fingerprint
    list are read from `main`, so changing them takes a reviewed pull request.
    The tagged commit must be on `main`, and a published release for the tag
    stops the run.
 2. Every later job checks out that commit and confirms HEAD is that commit.
-   The release script checks, the packages, the image tag, the gate flags and
+   The release tests, the packages, the image tag, the gate flags and
    the manifest `git_sha` all come from it.
-3. Packages the runner, runtime images, and Python catalog, and writes a
-   CycloneDX SBOM (`kako.cdx.json`, Rust crates plus the Python lockfile).
+3. Packages the runner, runtime images, and Python catalog, writes a
+   CycloneDX SBOM (`kako.cdx.json`, Rust crates plus the Python lockfile),
+   and writes the release notes from the version's `CHANGELOG.md` section, so
+   a missing section stops the run before anything is pushed.
 4. Pushes `ghcr.io/sannrox/kako:<version>` (never `latest`) and records its
    digest.
 5. Attests build provenance and the SBOM.
@@ -108,7 +111,17 @@ never push an image, attest, or touch a GitHub Release.
 7. Drafts the GitHub Release with `gh release create <tag> --verify-tag` from
    the CHANGELOG section, or resumes the draft an earlier run left, attaches
    every file above, then publishes it, as a pre-release for a tag containing
-   `-`.
+   `-` that is never marked latest. `scripts/release/github-release.sh` is
+   the only code that changes the Release.
+
+The workflow steps only call scripts under `scripts/release/`. The release
+tests in `tests/release/` cover those scripts and assert the workflows'
+structure on the parsed YAML; `bash scripts/check-workflows.sh` lints every
+workflow with pinned linters. Both run in CI on every pull request.
+
+Moving a release script changes the paths main's `release.yml` calls, so a
+retry for a tag cut before the move fails at its first script; cut a new rc
+or patch tag instead.
 
 ## Provenance
 

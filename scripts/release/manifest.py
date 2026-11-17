@@ -6,10 +6,15 @@ itself, so Tenkai receives a signed record of: component, version, git SHA,
 file and image digests, attestation URLs, and gate flags. Images are always
 referenced by digest; a `latest` tag is refused.
 
+With --labels-from-history, gate flags come from the labels of every pull
+request squashed into the release range (see release_range), read with `gh`
+from the current git checkout. Any lookup error, or a commit in the range
+without a pull request reference, fails instead of dropping a gate.
+
 Usage:
-  release-manifest.py --version V --git-sha SHA --dist DIR --out FILE
-      [--tag vV] [--image NAME=sha256:...] [--attestation URL] [--label NAME]
-  release-manifest.py --self-test
+  manifest.py --version V --git-sha SHA --dist DIR --out FILE
+      [--tag vV] [--image NAME=sha256:...] [--attestation URL]
+      [--label NAME]... [--labels-from-history]
 """
 
 from __future__ import annotations
@@ -19,8 +24,8 @@ import hashlib
 import json
 import pathlib
 import re
+import subprocess
 import sys
-import tempfile
 
 SCHEMA = "tenkai.family-release-manifest.v1"
 COMPONENT = "kako"
@@ -38,6 +43,8 @@ GATE_LABELS = {
 }
 VERSION_RE = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+(-(rc|beta)\.[0-9]+)?")
 DIGEST_RE = re.compile(r"sha256:[0-9a-f]{64}")
+# A squash-merged pull request ends its subject with "(#N)".
+PR_REF_RE = re.compile(r"\(#([0-9]+)\)$")
 
 
 def sha256_file(path: pathlib.Path) -> str:
@@ -97,56 +104,57 @@ def build_manifest(
     }
 
 
-def expect_exit(fn, message: str) -> None:
-    try:
-        fn()
-    except SystemExit as exc:
-        assert message in str(exc), exc
-    else:
-        raise AssertionError(f"expected failure: {message}")
+def git(*args: str) -> str:
+    return subprocess.run(["git", *args], check=True, capture_output=True, text=True).stdout
 
 
-def self_test() -> None:
-    assert gate_flags(["risk:breaking", "area:ops", "GATE:mig", "gate:realm", "docs"]) == [
-        "breaking",
-        "migration",
-        "realm",
-    ]
-    assert gate_flags([]) == []
-    expect_exit(lambda: parse_image("ghcr.io/sannrox/kako:latest=sha256:" + "a" * 64), "latest")
-    expect_exit(lambda: parse_image("ghcr.io/sannrox/kako:0.1.0=sha256:abc"), "NAME=sha256")
-    with tempfile.TemporaryDirectory() as tmp:
-        dist = pathlib.Path(tmp)
-        args = dict(version="0.1.0", git_sha="a" * 40, tag="v0.1.0", dist=dist, images=[], attestations=[], labels=[])
-        expect_exit(lambda: build_manifest(**args), "no release files")
-        (dist / "kako-0.1.0-x86_64-unknown-linux-gnu.tar.gz").write_bytes(b"bin")
-        (dist / "kako-sql-image.tar").write_bytes(b"tar")
-        (dist / "kako.cdx.json").write_text("{}")
-        for name in SKIP_NAMES:
-            (dist / name).write_text("skip\n")
-        expect_exit(lambda: build_manifest(**{**args, "git_sha": "deadbeef"}), "full lowercase SHA")
-        expect_exit(lambda: build_manifest(**{**args, "tag": "v0.2.0"}), "does not match")
-        image = parse_image("ghcr.io/sannrox/kako:0.1.0=sha256:" + "b" * 64)
-        manifest = build_manifest(
-            **{**args, "images": [image], "attestations": ["https://github.com/Sannrox/kako/attestations/1"], "labels": ["risk:migration"]}
+def release_range(sha: str) -> str:
+    """The commits whose pull requests can gate the release at sha.
+
+    The baseline is the nearest final (non-pre-release) ancestor tag, so a
+    final release also carries gates first seen in its release candidates.
+    Without a final tag, the range starts at the first pull request: the
+    commits before it are the repository bootstrap and carry no labels.
+    """
+    prev = subprocess.run(
+        ["git", "describe", "--tags", "--abbrev=0", "--match", "v*", "--exclude", "*-*", f"{sha}^"],
+        capture_output=True,
+        text=True,
+    )
+    if prev.returncode == 0:
+        return f"{prev.stdout.strip()}..{sha}"
+    for line in git("log", "--reverse", "--format=%H %s", sha).splitlines():
+        commit, _, subject = line.partition(" ")
+        if PR_REF_RE.search(subject):
+            return f"{commit}^..{sha}"
+    raise SystemExit(f"no pull request commit reaches {sha}")
+
+
+def pull_requests(subjects: str) -> list[int]:
+    """Pull request numbers from `git log --format='%h %s'` lines."""
+    lines = subjects.splitlines()
+    unattributed = [line for line in lines if not PR_REF_RE.search(line)]
+    if unattributed or not lines:
+        raise SystemExit("commits without a pull request reference:\n" + "\n".join(unattributed))
+    return sorted({int(PR_REF_RE.search(line).group(1)) for line in lines})
+
+
+def labels_from_history(sha: str) -> list[str]:
+    span = release_range(sha)
+    labels = []
+    for pr in pull_requests(git("log", "--format=%h %s", span)):
+        found = subprocess.run(
+            ["gh", "pr", "view", str(pr), "--json", "labels", "--jq", ".labels[].name"],
+            capture_output=True,
+            text=True,
         )
-        assert manifest["schema"] == SCHEMA and manifest["component"] == "kako"
-        assert [b["name"] for b in manifest["binaries"]] == [
-            "kako-0.1.0-x86_64-unknown-linux-gnu.tar.gz",
-            "kako-sql-image.tar",
-            "kako.cdx.json",
-        ]
-        assert all(DIGEST_RE.fullmatch(b["digest"]) for b in manifest["binaries"])
-        assert manifest["images"] == [image]
-        assert manifest["gate_flags"] == ["migration"]
-        assert "latest" not in json.dumps(manifest)
-    print("release-manifest self-test passed")
+        if found.returncode != 0:
+            raise SystemExit(f"cannot read labels of pull request #{pr}: {found.stderr.strip()}")
+        labels += [name for name in found.stdout.splitlines() if name]
+    return labels
 
 
 def main(argv: list[str]) -> None:
-    if argv == ["--self-test"]:
-        self_test()
-        return
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--version", required=True)
     parser.add_argument("--git-sha", required=True)
@@ -156,6 +164,7 @@ def main(argv: list[str]) -> None:
     parser.add_argument("--image", action="append", default=[])
     parser.add_argument("--attestation", action="append", default=[])
     parser.add_argument("--label", action="append", default=[])
+    parser.add_argument("--labels-from-history", action="store_true")
     args = parser.parse_args(argv)
     manifest = build_manifest(
         version=args.version,
@@ -164,7 +173,7 @@ def main(argv: list[str]) -> None:
         dist=args.dist,
         images=[parse_image(raw) for raw in args.image],
         attestations=args.attestation,
-        labels=args.label,
+        labels=args.label + (labels_from_history(args.git_sha) if args.labels_from_history else []),
     )
     args.out.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     print(args.out)

@@ -56,6 +56,9 @@ cargo test --locked --workspace
 cargo test --locked -p kako-source-sekai --features sekai-client
 bash scripts/validate-workflow-skills.sh
 python3 scripts/adr-index --check
+bash scripts/check-workflows.sh
+python3 -m pip install --require-hashes -r tests/requirements.txt
+python3 -m unittest discover -s tests -t .
 ```
 
 - `cargo fmt --all` formats before review.
@@ -65,6 +68,11 @@ python3 scripts/adr-index --check
 - `python3 scripts/adr-index --check` fails when the decision index in
   `docs/decisions/README.md` is stale; without `--check` it rewrites it. Never
   edit the index table by hand.
+- `scripts/check-workflows.sh` lints `.github/workflows/` with pinned
+  `actionlint` and `zizmor` binaries, checked by SHA-256 and cached under
+  `${XDG_CACHE_HOME:-~/.cache}/check-workflows`.
+- `python3 -m unittest discover -s tests -t .` runs the release tests in
+  `tests/release/`; they need PyYAML from `tests/requirements.txt` and `gpg`.
 
 There is no Makefile yet. When one is added, its targets become the source of
 truth for these commands and this section must point to them.
@@ -137,7 +145,7 @@ Rows beyond `## Testing Guidelines`:
 | dependency pins (kekkai, adapter clients) | `Cargo.lock` diff reviewed; the pinned tag exists upstream; upstream release notes read |
 | runtime image / Python packages | image builds; package set matches the documented policy |
 | docs, templates, Skills | `bash scripts/validate-workflow-skills.sh`; `python3 scripts/adr-index --check` for decision records |
-| `v*` release path | `bash scripts/validate-release.sh` |
+| `v*` release path, workflows | `bash scripts/check-workflows.sh`; `python3 -m unittest discover -s tests -t .` |
 
 ### Release audit
 
@@ -269,7 +277,8 @@ planned work with neither is not a running lane.
 Parallel lanes must not collide. Collision surfaces in this repository are the
 `JobSource` trait and receipt format, the `kekkai` sandbox pin, the run
 directory layout (staging, outputs, hashing,
-cleanup), and the runtime image with its Python package set. Lanes that would
+cleanup), the runtime image with its Python package set, and the release
+path (`.github/workflows/`, `scripts/release/`, `tests/release/`). Lanes that would
 both change one of these surfaces run in sequence, not in parallel.
 
 A lane publishes its first Verified commit to the claim branch as a draft Pull
@@ -330,6 +339,15 @@ with a fake job source. Mark tests that need an external job source, a Python
 runtime, kernel sandbox features, or the `kekkai-guest` helper as ignored,
 and document their prerequisites in the test. Offline `cargo test` must stay
 green without any external system.
+
+Workflow YAML only orchestrates; release logic lives in `scripts/release/`
+with one stdlib `unittest` file per script in `tests/release/`. Never grep
+workflow text: a workflow invariant no linter expresses gets a test in
+`tests/release/test_workflows.py` that asserts on the parsed YAML's structure
+(triggers, permissions, job graph, step order, which script a step runs),
+never on step names or wording. Release tests use temp paths that include the
+process id, fake `gh` and `docker` on `PATH`, and short `/tmp` gpg homes, so
+several agents can run them at once.
 
 ## Commit & Pull Request Guidelines
 

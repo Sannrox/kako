@@ -34,8 +34,8 @@ changes_identity_config = false
 
 # Contracts this release provides to dependents (Tenkai profile v2). The pin
 # is a digest of kako@<product.version>. The contract version is derived from
-# the job document API; `python3 scripts/tenkai-profile.py --check` refuses a
-# stale block.
+# the job document API; `python3 scripts/release/tenkai_profile.py --check`
+# refuses a stale block.
 [compatibility]
 version = 2
 # Evidence binds one release digest; one day is Tenkai's maximum.

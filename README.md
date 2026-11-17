@@ -381,8 +381,8 @@ stay unpublished while they depend on git pins
 maintainer action: [RELEASING.md](RELEASING.md).
 
 ```bash
-bash scripts/release-dry-run.sh --out dist
-bash scripts/release-dry-run.sh --out dist --with-images --with-site-packages
+bash scripts/release/package.sh --out dist
+bash scripts/release/package.sh --out dist --with-images --with-site-packages
 ```
 
 `--with-images` needs a container runtime. `--with-site-packages` installs
@@ -390,7 +390,10 @@ the hashed lockfile into the catalog tree. `workflow_dispatch` and pull
 requests package artifacts without attesting or creating a GitHub Release.
 Attestations and the Release need a `v*` tag; a `-rc.N` or `-beta.N` tag
 publishes a pre-release.
-`bash scripts/validate-release.sh` runs the release script self-tests.
+The release tests (`python3 -m pip install --require-hashes -r tests/requirements.txt`,
+then `python3 -m unittest discover -s tests -t .`) cover the release scripts
+and the workflows' structure; `bash scripts/check-workflows.sh` lints the
+workflows.
 
 ## Runner pool
 

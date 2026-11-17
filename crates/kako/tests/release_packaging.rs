@@ -1,4 +1,4 @@
-//! Release packaging: the dry-run script writes checksums of the real files.
+//! Release packaging: scripts/release/package.sh writes checksums of the real files.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -42,7 +42,7 @@ fn dry_run_checksums_match_packaged_files() {
     fs::write(&payload, b"kako-release-fixture\n").unwrap();
 
     let status = Command::new("bash")
-        .arg(root.join("scripts/release-dry-run.sh"))
+        .arg(root.join("scripts/release/package.sh"))
         .arg("--out")
         .arg(out.path())
         .arg("--skip-build")
@@ -52,7 +52,7 @@ fn dry_run_checksums_match_packaged_files() {
         .arg(root.join("runtime/python"))
         .status()
         .unwrap();
-    assert!(status.success(), "release-dry-run.sh failed: {status}");
+    assert!(status.success(), "package.sh failed: {status}");
 
     let sums = fs::read_to_string(out.path().join("SHA256SUMS")).unwrap();
     let mut hashed = 0;
@@ -75,12 +75,13 @@ fn dry_run_checksums_match_packaged_files() {
         sums.contains("kako-python-catalog.tar.gz"),
         "python catalog archive missing:\n{sums}"
     );
+    assert!(sums.contains("kako.cdx.json"), "SBOM missing:\n{sums}");
 }
 
 fn run_dry_run(out: &Path, binary: &Path) -> std::process::Output {
     let root = workspace_root();
     Command::new("bash")
-        .arg(root.join("scripts/release-dry-run.sh"))
+        .arg(root.join("scripts/release/package.sh"))
         .arg("--out")
         .arg(out)
         .arg("--skip-build")
@@ -100,7 +101,7 @@ fn python_catalog_archive_matches_lockfile_digest_layout() {
     let payload = payload_dir.path().join("kako");
     fs::write(&payload, b"kako-release-fixture\n").unwrap();
     let status = run_dry_run(out.path(), &payload).status;
-    assert!(status.success(), "release-dry-run.sh failed: {status}");
+    assert!(status.success(), "package.sh failed: {status}");
 
     let lock = fs::read(root.join("runtime/python/requirements.txt")).unwrap();
     let hex = digest::hash_bytes(&lock)
@@ -131,7 +132,7 @@ fn tag_version_must_match_cargo_toml() {
     let payload = payload_dir.path().join("kako");
     fs::write(&payload, b"kako-release-fixture\n").unwrap();
     let output = Command::new("bash")
-        .arg(root.join("scripts/release-dry-run.sh"))
+        .arg(root.join("scripts/release/package.sh"))
         .arg("--out")
         .arg(out.path())
         .arg("--skip-build")
@@ -155,6 +156,33 @@ fn tag_version_must_match_cargo_toml() {
 }
 
 #[test]
+fn tagged_run_writes_release_notes_from_changelog() {
+    let root = workspace_root();
+    let out = TempDir::new().unwrap();
+    let payload_dir = TempDir::new().unwrap();
+    let payload = payload_dir.path().join("kako");
+    fs::write(&payload, b"kako-release-fixture\n").unwrap();
+    let output = Command::new("bash")
+        .arg(root.join("scripts/release/package.sh"))
+        .arg("--out")
+        .arg(out.path())
+        .arg("--skip-build")
+        .arg("--binary")
+        .arg(&payload)
+        .arg("--version")
+        .arg(workspace_version())
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let notes = fs::read_to_string(out.path().join("RELEASE_NOTES.md")).unwrap();
+    assert!(!notes.trim().is_empty(), "release notes are empty");
+}
+
+#[test]
 fn dry_run_checksums_detect_a_tampered_tarball() {
     let root = workspace_root();
     let out = TempDir::new().unwrap();
@@ -163,7 +191,7 @@ fn dry_run_checksums_detect_a_tampered_tarball() {
     fs::write(&payload, b"kako-release-fixture\n").unwrap();
 
     let status = Command::new("bash")
-        .arg(root.join("scripts/release-dry-run.sh"))
+        .arg(root.join("scripts/release/package.sh"))
         .arg("--out")
         .arg(out.path())
         .arg("--skip-build")
@@ -173,7 +201,7 @@ fn dry_run_checksums_detect_a_tampered_tarball() {
         .arg(root.join("runtime/python"))
         .status()
         .unwrap();
-    assert!(status.success(), "release-dry-run.sh failed: {status}");
+    assert!(status.success(), "package.sh failed: {status}");
 
     let py = out.path().join("kako-python-catalog.tar.gz");
     let mut bytes = fs::read(&py).unwrap();
@@ -191,64 +219,8 @@ fn dry_run_checksums_detect_a_tampered_tarball() {
 }
 
 #[test]
-fn release_workflow_builds_signed_tag_artifacts() {
-    let yaml = fs::read_to_string(workspace_root().join(".github/workflows/release.yml")).unwrap();
-    assert!(yaml.contains("scripts/release-dry-run.sh"), "{yaml}");
-    assert!(yaml.contains("--with-images"), "{yaml}");
-    // Pinned to a commit SHA, with the tag it resolves from as a comment.
-    assert!(
-        yaml.lines()
-            .any(|line| line.contains("actions/attest-build-provenance@") && line.contains("# v3")),
-        "{yaml}"
-    );
-    assert!(yaml.contains("gh release create"), "{yaml}");
-    // A v* tag push only dispatches release.yml on main for that tag.
-    let dispatch =
-        fs::read_to_string(workspace_root().join(".github/workflows/release-dispatch.yml"))
-            .unwrap();
-    assert!(dispatch.contains(r#"tags: ["v*"]"#), "{dispatch}");
-    assert!(
-        dispatch.contains("gh workflow run release.yml --ref main"),
-        "{dispatch}"
-    );
-    assert!(yaml.contains("workflow_dispatch"), "{yaml}");
-    assert!(yaml.contains("--version"), "{yaml}");
-    assert!(yaml.contains("--with-site-packages"), "{yaml}");
-    assert!(
-        yaml.contains("if: needs.verify-tag.outputs.tag != ''"),
-        "attest and publish must run only for a verified tag: {yaml}"
-    );
-    assert!(
-        yaml.contains("ghcr.io/sannrox/kako"),
-        "tagged releases must push ghcr.io/sannrox/kako: {yaml}"
-    );
-    assert!(
-        yaml.contains("packages: write"),
-        "image push needs packages: write: {yaml}"
-    );
-    assert!(
-        yaml.contains("docker push"),
-        "tagged releases must docker push the SQL image: {yaml}"
-    );
-    assert!(
-        !yaml.contains(":latest"),
-        "release must not push a latest image tag: {yaml}"
-    );
-    let attest_idx = yaml
-        .find("actions/attest-build-provenance@")
-        .expect("missing attest action");
-    let tag_gate_before_attest = yaml[..attest_idx]
-        .rfind("if: needs.verify-tag.outputs.tag != ''")
-        .expect("attest job must sit behind the verified-tag gate");
-    assert!(
-        tag_gate_before_attest < attest_idx,
-        "attestation must not run on pull_request"
-    );
-}
-
-#[test]
 fn release_script_installs_hashed_site_packages_when_asked() {
-    let script = fs::read_to_string(workspace_root().join("scripts/release-dry-run.sh")).unwrap();
+    let script = fs::read_to_string(workspace_root().join("scripts/release/package.sh")).unwrap();
     assert!(script.contains("--with-site-packages"), "{script}");
     assert!(script.contains("pip install --require-hashes"), "{script}");
     assert!(script.contains("site-packages"), "{script}");
@@ -321,7 +293,7 @@ fn first_release_notes_and_tenkai_entry_match_workspace_version() {
 
 fn tenkai_profile_cmd() -> Command {
     let mut cmd = Command::new("python3");
-    cmd.arg(workspace_root().join("scripts/tenkai-profile.py"));
+    cmd.arg(workspace_root().join("scripts/release/tenkai_profile.py"));
     cmd
 }
 
@@ -329,7 +301,7 @@ fn tenkai_profile_stdout(args: &[&str]) -> String {
     let output = tenkai_profile_cmd().args(args).output().unwrap();
     assert!(
         output.status.success(),
-        "tenkai-profile.py {args:?} failed: {}",
+        "tenkai_profile.py {args:?} failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).unwrap()
@@ -366,7 +338,7 @@ fn committed_tenkai_product_matches_generated_v2_profile() {
     let check = tenkai_profile_cmd().arg("--check").output().unwrap();
     assert!(
         check.status.success(),
-        "tenkai-profile.py --check failed: {}",
+        "tenkai_profile.py --check failed: {}",
         String::from_utf8_lossy(&check.stderr)
     );
 }
@@ -406,7 +378,7 @@ fn tenkai_profile_check_refuses_a_stale_product() {
             .unwrap();
         assert!(
             !output.status.success(),
-            "{name} must be refused by tenkai-profile.py --check"
+            "{name} must be refused by tenkai_profile.py --check"
         );
     }
 }
