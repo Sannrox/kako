@@ -258,9 +258,8 @@ fn workspace_version() -> String {
 }
 
 #[test]
-fn first_release_notes_and_tenkai_entry_match_workspace_version() {
+fn release_notes_and_tenkai_entry_match_workspace_version() {
     let version = workspace_version();
-    assert_eq!(version, "0.1.0", "first release is 0.1.0");
     let changelog = fs::read_to_string(workspace_root().join("CHANGELOG.md")).unwrap();
     assert!(
         changelog.contains(&format!("## [{version}]")),

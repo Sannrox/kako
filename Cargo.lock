@@ -1655,7 +1655,7 @@ dependencies = [
 
 [[package]]
 name = "kako"
-version = "0.1.0"
+version = "0.1.1-rc.2"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -1676,7 +1676,7 @@ dependencies = [
 
 [[package]]
 name = "kako-core"
-version = "0.1.0"
+version = "0.1.1-rc.2"
 dependencies = [
  "libc",
  "serde",
@@ -1687,7 +1687,7 @@ dependencies = [
 
 [[package]]
 name = "kako-engine-duckdb"
-version = "0.1.0"
+version = "0.1.1-rc.2"
 dependencies = [
  "duckdb",
  "kako-core",
@@ -1697,7 +1697,7 @@ dependencies = [
 
 [[package]]
 name = "kako-engine-mizuchi"
-version = "0.1.0"
+version = "0.1.1-rc.2"
 dependencies = [
  "arrow 60.0.0",
  "kako-core",
@@ -1709,7 +1709,7 @@ dependencies = [
 
 [[package]]
 name = "kako-engine-python"
-version = "0.1.0"
+version = "0.1.1-rc.2"
 dependencies = [
  "kako-core",
  "kekkai",
@@ -1719,7 +1719,7 @@ dependencies = [
 
 [[package]]
 name = "kako-sandbox"
-version = "0.1.0"
+version = "0.1.1-rc.2"
 dependencies = [
  "kako-core",
  "kekkai",
@@ -1729,7 +1729,7 @@ dependencies = [
 
 [[package]]
 name = "kako-source-sekai"
-version = "0.1.0"
+version = "0.1.1-rc.2"
 dependencies = [
  "futures-util",
  "kako-core",
@@ -1743,7 +1743,7 @@ dependencies = [
 
 [[package]]
 name = "kako-worker"
-version = "0.1.0"
+version = "0.1.1-rc.2"
 dependencies = [
  "kako-core",
  "kako-engine-duckdb",
