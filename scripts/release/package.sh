@@ -148,6 +148,8 @@ if [[ "$with_sql_image" == true ]]; then
   mkdir -p "$sql_ctx"
   cp "$binary" "$sql_ctx/kako"
   docker build -f "$sql_dockerfile" -t "kako-sql:${version}" "$sql_ctx"
+  # The host glibc can be newer than this image. Fail closed before save.
+  docker run --rm "kako-sql:${version}" --version
   docker save "kako-sql:${version}" -o "$out/kako-sql-image.tar"
 fi
 if [[ "$with_images" == true ]]; then
