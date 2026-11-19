@@ -31,7 +31,8 @@ pool's health and drain are a separate Issue.
    - `kako-release.json`, the family release manifest Tenkai admits, with
      its own provenance attestation.
    The same tag also pushes the SQL image to `ghcr.io/sannrox/kako:<version>`
-   (never `latest`). `deploy/tenkai.toml` is the Tenkai product entry for that
+   (never `latest`) as a multi-arch index for linux/amd64 and linux/arm64.
+   `deploy/tenkai.toml` is the Tenkai product entry for that
    image. Its compatibility profile provides the job-submission contract
    (`kako.jobs`) at the version derived from the job document this tree ships.
 2. **Crates stay `publish = false`** until every runtime dependency is a

@@ -374,7 +374,7 @@ A signed, annotated `v*` tag runs `.github/workflows/release.yml` from
 SQL and Python runtime images, a Python catalog archive that unpacks into
 `KAKO_PYTHON_IMAGES`, an SBOM, `SHA256SUMS`, the Tenkai release manifest
 `kako-release.json`, and artifact attestations. The same tag pushes `ghcr.io/sannrox/kako:<version>`
-(never `latest`). `deploy/tenkai.toml` is the Tenkai product entry; it
+(never `latest`) as a multi-arch index for linux/amd64 and linux/arm64. `deploy/tenkai.toml` is the Tenkai product entry; it
 provides the job-submission contract dependents require. Crates
 stay unpublished while they depend on git pins
 ([ADR 0008](docs/decisions/0008-release-artifacts.md)). Cutting a tag is a
