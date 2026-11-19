@@ -99,8 +99,8 @@ never push an image, attest, or touch a GitHub Release.
    CycloneDX SBOM (`kako.cdx.json`, Rust crates plus the Python lockfile),
    and writes the release notes from the version's `CHANGELOG.md` section, so
    a missing section stops the run before anything is pushed.
-4. Pushes `ghcr.io/sannrox/kako:<version>` (never `latest`) and records its
-   digest.
+4. Pushes `ghcr.io/sannrox/kako:<version>` (never `latest`) as a multi-arch
+   index for linux/amd64 and linux/arm64, and records that index digest.
 5. Attests build provenance and the SBOM.
 6. Writes `kako-release.json`, the family release manifest: component,
    version, git SHA, file and image digests, attestation URLs, and gate flags

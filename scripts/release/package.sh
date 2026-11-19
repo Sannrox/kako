@@ -3,7 +3,8 @@
 #
 # Always writes the runner tarball, the Python catalog tree, and the SBOM
 # (kako.cdx.json). With --with-images, also builds and saves the SQL and
-# Python container images when docker is on PATH. A tagged run passes
+# Python container images when docker is on PATH. --with-sql-image builds
+# only the SQL image (the arm64 release job). A tagged run passes
 # --version, which must match Cargo.toml, and also writes RELEASE_NOTES.md
 # from that version's CHANGELOG.md section, so a missing section fails here,
 # before anything is pushed or attested.
@@ -12,12 +13,14 @@
 #   bash scripts/release/package.sh --out dist
 #   bash scripts/release/package.sh --out dist --skip-build --binary path/to/kako
 #   bash scripts/release/package.sh --out dist --version 0.1.0 --with-images
+#   bash scripts/release/package.sh --out dist --version 0.1.0 --with-sql-image
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 out=""
 skip_build=false
 with_images=false
+with_sql_image=false
 with_site_packages=false
 binary=""
 version_override=""
@@ -25,7 +28,7 @@ python_dir="$root/runtime/python"
 sql_dockerfile="$root/runtime/sql/Dockerfile"
 
 usage() {
-  sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-2}"
 }
 
@@ -48,7 +51,8 @@ while [[ $# -gt 0 ]]; do
       shift 2
       ;;
     --skip-build) skip_build=true; shift ;;
-    --with-images) with_images=true; shift ;;
+    --with-images) with_images=true; with_sql_image=true; shift ;;
+    --with-sql-image) with_sql_image=true; shift ;;
     --with-site-packages) with_site_packages=true; shift ;;
     -h | --help) usage 0 ;;
     *) usage 1 ;;
@@ -131,9 +135,9 @@ fi
 py_tar="$out/kako-python-catalog.tar.gz"
 tar -C "$catalog" -czf "$py_tar" current "$lock_hex"
 
-if [[ "$with_images" == true ]]; then
+if [[ "$with_sql_image" == true ]]; then
   command -v docker >/dev/null 2>&1 || {
-    echo "package: --with-images requires docker" >&2
+    echo "package: --with-images/--with-sql-image requires docker" >&2
     exit 1
   }
   [[ -f "$sql_dockerfile" ]] || {
@@ -145,6 +149,8 @@ if [[ "$with_images" == true ]]; then
   cp "$binary" "$sql_ctx/kako"
   docker build -f "$sql_dockerfile" -t "kako-sql:${version}" "$sql_ctx"
   docker save "kako-sql:${version}" -o "$out/kako-sql-image.tar"
+fi
+if [[ "$with_images" == true ]]; then
   docker build -t "kako-python:${version}" "$python_dir"
   docker save "kako-python:${version}" -o "$out/kako-python-image.tar"
 fi

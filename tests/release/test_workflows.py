@@ -148,6 +148,22 @@ class Release(unittest.TestCase):
                 self.assertNotIn("||", condition)
         self.assertEqual(mutating, {"push-image", "attest", "publish"})
 
+    def test_sql_image_push_covers_amd64_and_arm64(self):
+        arm = self.jobs["sql-image-arm64"]
+        self.assertEqual(arm["runs-on"], "ubuntu-24.04-arm")
+        self.assertLessEqual({"verify-tag", "tests"}, needs(arm))
+        writers = {k for k, v in arm.get("permissions", {}).items() if v == "write"}
+        self.assertEqual(writers, set())
+        package = next(s for s in arm["steps"] if "scripts/release/package.sh" in runs(s))
+        self.assertIn("--with-sql-image", runs(package))
+        self.assertNotIn("--with-images", runs(package))
+        push = self.jobs["push-image"]
+        self.assertLessEqual({"package", "sql-image-arm64"}, needs(push))
+        self.assertIn("needs.sql-image-arm64.result == 'success'", push["if"])
+        run = next(runs(s) for s in push["steps"] if "scripts/release/push-image.sh" in runs(s))
+        self.assertIn("dist/kako-sql-image.tar", run)
+        self.assertIn("dist-arm64/kako-sql-image.tar", run)
+
     def test_publish_runs_last_after_every_asset_job(self):
         publish = self.jobs["publish"]
         self.assertLessEqual({"package", "attest", "push-image"}, needs(publish))
