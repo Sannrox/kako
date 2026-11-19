@@ -10,6 +10,47 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1-rc.2] - 2026-11-19
+
+### Breaking changes and upgrade
+
+- A job may declare an input as a `sha256:` digest of another job's
+  output, resolved from `--inputs-from` directories via prior
+  `receipt.json` files. Staging re-hashes the copy and refuses a
+  mismatch. `kako_core::Input` gains a public `digest` field; struct
+  literals that omit it do not compile
+  ([#127](https://github.com/Sannrox/kako/pull/127)).
+
+### Added
+
+- `ghcr.io/sannrox/kako:<version>` is a multi-arch index for
+  `linux/amd64` and `linux/arm64`. The GitHub Release still ships the
+  amd64 `kako-sql-image.tar`. The image tag is never `latest`
+  ([#139](https://github.com/Sannrox/kako/pull/139)).
+- The Tenkai product entry provides the job-submission contract
+  dependents require: `deploy/tenkai.toml` ends with a profile v2 block
+  that `provides` `"kako.jobs" = "1.0.0"`. The version is generated from
+  the shipped JSON job document
+  ([#128](https://github.com/Sannrox/kako/pull/128)).
+- On timeout or a job-source abort, the runner writes a scratch
+  `cancel` file and waits a grace window before killing the process
+  group. Engines that expose cooperative cancel stop and return
+  `Failure::Cancelled`. The kill path still fires when the engine
+  ignores the file
+  ([#130](https://github.com/Sannrox/kako/pull/130)).
+
+### Changed
+
+- kekkai is pinned to signed tag `v0.2.3` and mizuchi to signed tag
+  `v0.1.0`. `Cargo.lock` still records the verified tag commit
+  ([#114](https://github.com/Sannrox/kako/pull/114)).
+- A `v*` tag push dispatches `release.yml` from `main`. Tags containing
+  `-` publish as a GitHub pre-release and are never marked latest
+  ([#119](https://github.com/Sannrox/kako/pull/119)).
+- Release workflows are linted with pinned `actionlint` and `zizmor`.
+  Release invariants live in `tests/release/` against parsed YAML
+  ([#136](https://github.com/Sannrox/kako/pull/136)).
+
 ## [0.1.0] - 2026-10-30
 
 ### Added
