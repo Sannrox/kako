@@ -10,6 +10,15 @@ uses [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1-rc.3] - 2026-11-19
+
+### Fixed
+
+- The linux/arm64 SQL image starts. The runtime base is Debian 13, so its
+  glibc is at least as new as the binary built on the release runners.
+  Packaging runs the image with `--version` before saving it
+  ([#142](https://github.com/Sannrox/kako/pull/142)).
+
 ## [0.1.1-rc.2] - 2026-11-19
 
 ### Breaking changes and upgrade
