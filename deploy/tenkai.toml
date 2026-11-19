@@ -7,14 +7,14 @@
 
 [product]
 name = "kako"
-version = "0.1.1-rc.3"
+version = "0.1.1"
 description = "Sandboxed data-transform runner"
 
 [deploy]
 workdir = "."
 install = """
 set -e
-IMG=ghcr.io/sannrox/kako:0.1.1-rc.3
+IMG=ghcr.io/sannrox/kako:0.1.1
 docker pull "$IMG"
 docker rm -f kako-runner >/dev/null 2>&1 || true
 docker run -d --name kako-runner -p 8080:8080 "$IMG" serve --listen 0.0.0.0:8080
@@ -43,7 +43,7 @@ max_evidence_age_ms = 86400000
 
 [compatibility.components.kako.pin]
 kind = "digest"
-value = "sha256:507d8b980791b78d12d14bca09bc2bcd6445c2359acd1f3f35fdea873ddb6b87"
+value = "sha256:410bdff6fb41e913d5b89b711f58d6162f3b53e9b5cb72db28f1bda7c9d25650"
 
 [compatibility.components.kako.provides]
 "kako.jobs" = "1.0.0"
