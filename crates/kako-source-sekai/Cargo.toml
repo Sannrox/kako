@@ -19,7 +19,8 @@ sekai-client = [
 
 [dependencies]
 kako-core = { workspace = true }
-sekai-client = { git = "https://github.com/Sannrox/sekai-chisei", rev = "2c2759d5a2e02d2ad3e4846483a296afbf2e01be", optional = true }
+# Signed release tag. Cargo.lock holds the verified tag commit; builds use --locked.
+sekai-client = { git = "https://github.com/Sannrox/sekai-chisei", tag = "v3.1.0", optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true, optional = true }

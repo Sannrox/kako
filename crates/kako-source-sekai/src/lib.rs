@@ -316,6 +316,19 @@ impl FakeClaimTransport {
         self.omit_credential_markings = true;
     }
 
+    /// Treat the held claim as expired: the next `runtime_id` may take it at
+    /// a higher generation. Models a killed runner whose lease ran out.
+    pub fn expire_held_lease(&mut self, runtime_id: impl Into<String>) {
+        let Some(mut work) = self.held_work.take() else {
+            return;
+        };
+        work.fence.generation += 1;
+        work.fence.runtime_id = runtime_id.into();
+        work.fence.fencing_token = format!("fence-{}", work.fence.generation);
+        self.queued = Some(work);
+        self.live_credentials.clear();
+    }
+
     pub fn writes(&self) -> &[PathBuf] {
         &self.writes
     }
@@ -865,6 +878,37 @@ mod tests {
         let again = source.next_job().unwrap().expect("requeued");
         assert_eq!(again.id, claimed.id);
         assert!(source.into_transport().writes().is_empty());
+    }
+
+    #[test]
+    fn killed_runner_lease_expiry_lets_another_runner_complete_once() {
+        let scratch = tempfile::tempdir().unwrap();
+        let (job, fence) = sample_claimed_job(scratch.path(), "runner-a");
+        let mut first =
+            SekaiSource::new(FakeClaimTransport::with_job(job.clone(), fence), "runner-a");
+        let claimed = first.next_job().unwrap().expect("claimed");
+        let mut transport = first.into_transport();
+        transport.expire_held_lease("runner-b");
+        let mut second = SekaiSource::new(transport, "runner-b");
+        let again = second.next_job().unwrap().expect("reclaimed");
+        assert_eq!(again.id, claimed.id);
+        let out = scratch.path().join("out.csv");
+        std::fs::write(&out, "id\n1\n").unwrap();
+        second
+            .complete(
+                &again,
+                &[Output {
+                    name: "out".into(),
+                    path: out,
+                    digest: Digest("sha256:out".into()),
+                }],
+                &receipt(&again),
+            )
+            .unwrap();
+        let mut transport = second.into_transport();
+        assert_eq!(transport.writes().len(), 1);
+        assert!(transport.live_credentials().is_empty());
+        assert!(transport.claim_next("runner-b").unwrap().is_none());
     }
 
     #[test]
