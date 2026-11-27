@@ -132,6 +132,13 @@ SF1 and SF10 weekly and on demand; it is not part of pull-request CI except
 when the harness changes. `engine_bar_sf` in the kako test suite runs the same
 SQL at the tiny scale in process.
 
+`bash scripts/engine-bar/slt/run.sh both <dir>` is the sqllogictest corpus
+under `scripts/engine-bar/slt/`. Each query is a kako job (`COPY (SELECT …)`
+plus CSV inputs from CREATE/INSERT). Pull-request CI runs the default engine
+in process (`engine_bar_slt`); the weekly workflow runs both engines through
+`kako run`. `skipif` records are listed as unsupported. The report row is
+pass/fail/unsupported.
+
 To capture a baseline:
 
 ```bash

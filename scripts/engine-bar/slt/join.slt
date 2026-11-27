@@ -1,0 +1,154 @@
+# Join kinds both engines accept as kako jobs. Null keys never match.
+# t.a: 1, 2, 2, 3, NULL. u.id: 2, 2, 4, NULL.
+
+statement ok
+CREATE TABLE t (a INTEGER)
+
+statement ok
+INSERT INTO t VALUES (1), (2), (2), (3), (NULL)
+
+statement ok
+CREATE TABLE u (id INTEGER, x INTEGER)
+
+statement ok
+INSERT INTO u VALUES (2, 10), (2, 30), (4, 40), (NULL, 99)
+
+query II rowsort
+SELECT t.a, u.id FROM t JOIN u ON t.a = u.id
+----
+2
+2
+2
+2
+2
+2
+2
+2
+
+query II rowsort
+SELECT t.a, u.id FROM t INNER JOIN u ON t.a = u.id
+----
+2
+2
+2
+2
+2
+2
+2
+2
+
+query II rowsort
+SELECT t.a, u.id FROM t LEFT JOIN u ON t.a = u.id
+----
+1
+NULL
+2
+2
+2
+2
+2
+2
+2
+2
+3
+NULL
+NULL
+NULL
+
+query II rowsort
+SELECT t.a, u.id FROM t RIGHT JOIN u ON t.a = u.id
+----
+2
+2
+2
+2
+2
+2
+2
+2
+NULL
+4
+NULL
+NULL
+
+query II rowsort
+SELECT t.a, u.id FROM t FULL OUTER JOIN u ON t.a = u.id
+----
+1
+NULL
+2
+2
+2
+2
+2
+2
+2
+2
+3
+NULL
+NULL
+4
+NULL
+NULL
+NULL
+NULL
+
+query II rowsort
+SELECT t.a, u.id FROM t CROSS JOIN u
+----
+1
+2
+1
+2
+1
+4
+1
+NULL
+2
+2
+2
+2
+2
+2
+2
+2
+2
+4
+2
+4
+2
+NULL
+2
+NULL
+3
+2
+3
+2
+3
+4
+3
+NULL
+NULL
+2
+NULL
+2
+NULL
+4
+NULL
+NULL
+
+# DuckDB spelling is SEMI/ANTI JOIN; mizuchi uses LEFT SEMI/ANTI JOIN.
+skipif duckdb_sql
+query I rowsort
+SELECT t.a FROM t LEFT SEMI JOIN u ON t.a = u.id
+----
+2
+2
+
+skipif duckdb_sql
+query I rowsort
+SELECT t.a FROM t LEFT ANTI JOIN u ON t.a = u.id
+----
+1
+3
+NULL

@@ -208,5 +208,27 @@ class Release(unittest.TestCase):
         )
 
 
+class EngineBar(unittest.TestCase):
+    """Scale-factor and sqllogictest jobs stay on the named harness scripts."""
+
+    def setUp(self):
+        self.wf = load("engine-bar.yml")
+        self.jobs = self.wf["jobs"]
+
+    def test_pr_runs_when_the_slt_harness_changes(self):
+        paths = self.wf["on"]["pull_request"]["paths"]
+        self.assertIn("scripts/engine-bar/slt/**", paths)
+        self.assertIn("scripts/engine-bar/sf/**", paths)
+        self.assertIn(".github/workflows/engine-bar.yml", paths)
+
+    def test_slt_job_runs_both_engines_through_the_harness(self):
+        job = self.jobs["slt"]
+        run = next(s for s in job["steps"] if "scripts/engine-bar/slt/run.sh" in runs(s))
+        self.assertIn("scripts/ci-cgroup-delegate.sh", runs(run))
+        self.assertIn("both", runs(run))
+        self.assertIn("scripts/engine-bar/slt/run.sh", runs(run))
+
+
 if __name__ == "__main__":
     unittest.main()
+
