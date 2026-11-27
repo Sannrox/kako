@@ -1,10 +1,10 @@
 //! Plane adapter for the streaming runner (#75).
 //!
-//! [`LiveStreamingPlane`] heartbeats the claim and applies a batch through
-//! [`StreamingBatchClient`]. A local client keeps the plane's apply
-//! semantics on disk so tests restart a worker without a live plane. The
-//! `sekai-client` feature maps the same payload onto
-//! `ApplyStreamingTransformBatch`.
+//! [`LiveStreamingPlane`] heartbeats the claim through `HeartbeatWorkClaim`
+//! and applies a batch through [`StreamingBatchClient`]. A local client
+//! keeps the plane's apply semantics on disk so tests restart a worker
+//! without a live plane. The `sekai-client` feature maps the same payload
+//! onto `ApplyStreamingTransformBatch`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -238,7 +238,7 @@ mod sekai {
     use sekai_client::{ClientConfig, CoreLoopClient, GrpcTransport};
 
     use super::*;
-    use crate::live::{map_claim_error, transform_fence};
+    use crate::live::{map_claim_error, transform_fence, work_fence};
 
     /// Runtime-claim client mapped onto [`StreamingBatchClient`].
     pub struct SekaiStreamingClient {
@@ -327,7 +327,7 @@ mod sekai {
                 .block_on(
                     self.client
                         .runtime_claim()
-                        .heartbeat_transform(&transform_fence(fence), ttl),
+                        .heartbeat_work(&work_fence(fence), ttl),
                 )
                 .map(|_| ())
                 .map_err(map_claim_error)

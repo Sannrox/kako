@@ -86,6 +86,14 @@ mod tests {
             adapter.contains("optional = true") && adapter.contains("sekai-client"),
             "sekai-client must stay optional on kako-source-sekai:\n{adapter}"
         );
+        let pin = adapter
+            .lines()
+            .find(|line| line.contains("sekai-client =") && line.contains("git ="))
+            .expect("sekai-client git pin");
+        assert!(
+            pin.contains("tag =") && !pin.contains("rev ="),
+            "sekai-client must pin a tagged sekai-chisei release:\n{pin}"
+        );
     }
 
     #[test]
