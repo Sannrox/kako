@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """Score scale-factor engine-bar runs against docs/engine-requirements.md.
 
-Usage: report.py <results-dir>...
+Usage: report.py [--previous DIR] <results-dir>...
 
 Each directory is one run.sh output. Prints a Markdown section per scale and
-writes <results-dir>/summary.json. Exits 0 even when a bar fails: the report
-records the verdict, it does not gate CI.
+writes <results-dir>/summary.json. Wall clock is the median of the trials in
+runs.jsonl; peak memory is the maximum; spread is min-max. --previous DIR
+scores an earlier run.sh output (or a committed snapshot copied into that
+layout) and adds the delta to the report. Exits 0 even when a bar fails: the
+report records the verdict, it does not gate CI.
 """
 
+import argparse
 import csv
 import json
 import math
+import statistics
 import sys
 from pathlib import Path
 
@@ -59,37 +64,122 @@ def mib(value):
     return "" if value is None else f"{value / 1048576:.0f}"
 
 
-def score(results):
+def unique(items):
+    seen = set()
+    out = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+def group_trials(runs):
+    grouped = {}
+    for run in runs:
+        grouped.setdefault((run["query"], run["engine"]), []).append(run)
+    return grouped
+
+
+def summarize_engine(trials):
+    """Collapse trials for one query and engine.
+
+    Status is ok only when every trial succeeded. Duration is the median of
+    the successful trials; peak is their maximum. Spread is min-max.
+    """
+    if not trials:
+        return {
+            "status": "missing",
+            "n": 0,
+            "n_ok": 0,
+            "duration_ms": None,
+            "duration_min": None,
+            "duration_max": None,
+            "memory_peak_bytes": None,
+            "engine_version": None,
+            "error": "",
+        }
+    ok = [trial for trial in trials if trial["status"] == "ok"]
+    failed = [trial for trial in trials if trial["status"] != "ok"]
+    durations = [trial["duration_ms"] for trial in ok if trial.get("duration_ms") is not None]
+    peaks = [trial["memory_peak_bytes"] for trial in ok if trial.get("memory_peak_bytes") is not None]
+    return {
+        "status": "ok" if ok and not failed else ("failed" if failed else "missing"),
+        "n": len(trials),
+        "n_ok": len(ok),
+        "duration_ms": statistics.median(durations) if durations else None,
+        "duration_min": min(durations) if durations else None,
+        "duration_max": max(durations) if durations else None,
+        "memory_peak_bytes": max(peaks) if peaks else None,
+        "engine_version": next(
+            (trial.get("engine_version") for trial in ok if trial.get("engine_version")),
+            None,
+        ),
+        "error": failed[-1].get("error", "") if failed else "",
+    }
+
+
+def fmt_ms(value):
+    if value is None:
+        return ""
+    if isinstance(value, float) and not value.is_integer():
+        return f"{value:.1f}"
+    return str(int(value))
+
+
+def fmt_ms_cell(status, median, low, high):
+    if status != "ok":
+        return status
+    if median is None:
+        return "missing"
+    if low is None or high is None or low == high:
+        return fmt_ms(median)
+    return f"{fmt_ms(median)} ({fmt_ms(low)}-{fmt_ms(high)})"
+
+
+def score(results, require_outputs=True):
     host = json.loads((results / "host.json").read_text())
-    runs = [json.loads(line) for line in (results / "runs.jsonl").read_text().splitlines()]
-    by = {(run["query"], run["engine"]): run for run in runs}
+    runs = [json.loads(line) for line in (results / "runs.jsonl").read_text().splitlines() if line]
+    grouped = group_trials(runs)
+    queries = sorted({run["query"] for run in runs})
     rows, ratios, failures, mismatches = [], [], [], []
-    for query in sorted({run["query"] for run in runs}):
-        current, candidate = by.get((query, CURRENT)), by.get((query, CANDIDATE))
-        ok = [r for r in (current, candidate) if r and r["status"] == "ok"]
-        failures += [f"{query}/{r['engine']}" for r in (current, candidate) if r and r["status"] != "ok"]
+    for query in queries:
+        current = summarize_engine(grouped.get((query, CURRENT), []))
+        candidate = summarize_engine(grouped.get((query, CANDIDATE), []))
+        if current["status"] != "ok":
+            failures.append(f"{query}/{CURRENT}")
+        if candidate["status"] != "ok":
+            failures.append(f"{query}/{CANDIDATE}")
         match = None
         ratio = None
-        if len(ok) == 2:
-            match = same_result(
-                read_csv(results / f"{query}-{CURRENT}.csv"),
-                read_csv(results / f"{query}-{CANDIDATE}.csv"),
-            )
-            if not match:
+        if current["status"] == "ok" and candidate["status"] == "ok":
+            left = results / f"{query}-{CURRENT}.csv"
+            right = results / f"{query}-{CANDIDATE}.csv"
+            if left.exists() and right.exists():
+                match = same_result(read_csv(left), read_csv(right))
+                if not match:
+                    mismatches.append(query)
+            elif require_outputs:
+                match = False
                 mismatches.append(query)
             ratio = max(candidate["duration_ms"], 1) / max(current["duration_ms"], 1)
             ratios.append(ratio)
         rows.append(
             {
                 "query": query,
-                "current_ms": current.get("duration_ms") if current else None,
-                "candidate_ms": candidate.get("duration_ms") if candidate else None,
+                "n": max(current["n"], candidate["n"]),
+                "current_ms": current["duration_ms"],
+                "current_ms_min": current["duration_min"],
+                "current_ms_max": current["duration_max"],
+                "candidate_ms": candidate["duration_ms"],
+                "candidate_ms_min": candidate["duration_min"],
+                "candidate_ms_max": candidate["duration_max"],
                 "ratio": ratio,
-                "current_peak_bytes": current.get("memory_peak_bytes") if current else None,
-                "candidate_peak_bytes": candidate.get("memory_peak_bytes") if candidate else None,
+                "current_peak_bytes": current["memory_peak_bytes"],
+                "candidate_peak_bytes": candidate["memory_peak_bytes"],
                 "match": match,
-                "current_status": current["status"] if current else "missing",
-                "candidate_status": candidate["status"] if candidate else "missing",
+                "current_status": current["status"],
+                "candidate_status": candidate["status"],
             }
         )
     # A typed `limit:` failure is allowed by the resource bar; a cgroup kill,
@@ -97,16 +187,19 @@ def score(results):
     # whole worker cgroup, so it is compared with the job cap; the engine's
     # internal cap needs engine telemetry this harness does not have.
     cap = host.get("job_memory_bytes")
-    resource_failures = [
-        f"{run['query']}/{run['engine']}: {failure_kind(run.get('error', ''))}"
-        for run in runs
-        if run["status"] != "ok" and not typed_limit(run.get("error", ""))
-    ] + [
-        f"{run['query']}/{run['engine']}: peak {mib(run['memory_peak_bytes'])} MiB "
-        f"over the {mib(cap)} MiB job cap"
-        for run in runs
-        if cap and run["status"] == "ok" and (run.get("memory_peak_bytes") or 0) > cap
-    ]
+    resource_failures = unique(
+        [
+            f"{run['query']}/{run['engine']}: {failure_kind(run.get('error', ''))}"
+            for run in runs
+            if run["status"] != "ok" and not typed_limit(run.get("error", ""))
+        ]
+        + [
+            f"{run['query']}/{run['engine']}: peak {mib(run['memory_peak_bytes'])} MiB "
+            f"over the {mib(cap)} MiB job cap"
+            for run in runs
+            if cap and run["status"] == "ok" and (run.get("memory_peak_bytes") or 0) > cap
+        ]
+    )
     geo_mean = math.exp(sum(map(math.log, ratios)) / len(ratios)) if ratios else None
     verdict = {
         "correctness": not failures and not mismatches,
@@ -116,7 +209,13 @@ def score(results):
         and max(ratios) <= QUERY_MAX,
         "resource": not resource_failures,
     }
-    versions = sorted({run["engine_version"] for run in runs if run.get("engine_version")})
+    versions = sorted(
+        {
+            run["engine_version"]
+            for run in runs
+            if run.get("engine_version")
+        }
+    )
     return {
         "scale": host["scale"],
         "host": host,
@@ -131,20 +230,52 @@ def score(results):
     }
 
 
+def vs_previous_line(current, previous):
+    def fmt(value):
+        return "n/a" if value is None else f"{value:.2f}"
+
+    def bar(name):
+        now = "pass" if current["verdict"][name] else "fail"
+        then = "pass" if previous["verdict"][name] else "fail"
+        return f"{name} {then}->{now}"
+
+    geo_from, geo_to = previous["geo_mean_ratio"], current["geo_mean_ratio"]
+    delta = None if geo_from is None or geo_to is None else geo_to - geo_from
+    delta_s = "" if delta is None else f" (delta {delta:+.2f})"
+    return (
+        f"Vs previous: geometric mean {fmt(geo_from)} -> {fmt(geo_to)}{delta_s}; "
+        f"worst query {fmt(previous['max_ratio'])} -> {fmt(current['max_ratio'])}. "
+        f"Bars: {', '.join(bar(name) for name in current['verdict'])}."
+    )
+
+
 def markdown(summary):
     host = summary["host"]
+    n = max((row["n"] for row in summary["queries"]), default=0)
     lines = [
         f"### Scale factor {summary['scale']}",
         "",
         f"Host: {host['cpus']} CPUs, {host['memory_bytes_host'] / 1073741824:.1f} GiB. "
-        f"Engines: {', '.join(summary['engine_versions'])}.",
+        f"Engines: {', '.join(summary['engine_versions'])}. "
+        f"Trials per query: {n}. Wall clock is the median; peak memory is the maximum; "
+        f"spread is min-max.",
         "",
         "| query | duckdb ms | mizuchi ms | ratio | duckdb peak MiB | mizuchi peak MiB | results match |",
         "| --- | ---: | ---: | ---: | ---: | ---: | --- |",
     ]
     for row in summary["queries"]:
-        cur = row["current_ms"] if row["current_status"] == "ok" else row["current_status"]
-        cand = row["candidate_ms"] if row["candidate_status"] == "ok" else row["candidate_status"]
+        cur = fmt_ms_cell(
+            row["current_status"],
+            row["current_ms"],
+            row["current_ms_min"],
+            row["current_ms_max"],
+        )
+        cand = fmt_ms_cell(
+            row["candidate_status"],
+            row["candidate_ms"],
+            row["candidate_ms_min"],
+            row["candidate_ms_max"],
+        )
         ratio = "" if row["ratio"] is None else f"{row['ratio']:.2f}"
         match = {True: "yes", False: "no", None: "n/a"}[row["match"]]
         lines.append(
@@ -169,15 +300,36 @@ def markdown(summary):
     notes += summary["resource_failures"]
     if notes:
         lines += [""] + [f"- {note}" for note in notes]
+    if summary.get("previous"):
+        lines += ["", vs_previous_line(summary, summary["previous"])]
     return "\n".join(lines) + "\n"
 
 
-def main(dirs):
-    if not dirs:
-        sys.exit(__doc__)
-    for raw in dirs:
+def parse_args(argv):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument(
+        "--previous",
+        metavar="DIR",
+        help="earlier run.sh output to compare (committed snapshot or last weekly dir)",
+    )
+    parser.add_argument("dirs", nargs="+", help="run.sh output directories")
+    return parser.parse_args(argv)
+
+
+def main(argv):
+    args = parse_args(argv)
+    previous = None
+    if args.previous:
+        previous = score(Path(args.previous), require_outputs=False)
+    for raw in args.dirs:
         results = Path(raw)
         summary = score(results)
+        if previous is not None:
+            summary["previous"] = {
+                "geo_mean_ratio": previous["geo_mean_ratio"],
+                "max_ratio": previous["max_ratio"],
+                "verdict": previous["verdict"],
+            }
         (results / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         print(markdown(summary))
 

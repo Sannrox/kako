@@ -126,11 +126,13 @@ script exits 2; the same SQL is still covered by
 
 `bash scripts/engine-bar/sf/run.sh <tiny|1|10> <dir>` is the scale-factor suite:
 it generates the decision-support tables, runs the fixed query set in
-`scripts/engine-bar/sf/queries/` on both engines under the same limits, and
-`report.py` scores the run against this page. The `Engine bar` workflow runs
-SF1 and SF10 weekly and on demand; it is not part of pull-request CI except
-when the harness changes. `engine_bar_sf` in the kako test suite runs the same
-SQL at the tiny scale in process.
+`scripts/engine-bar/sf/queries/` three times per engine under the same limits,
+and `report.py` scores the median wall clock, the maximum peak memory, and
+the min-max spread against this page. The weekly job summary also prints the
+delta against the previous recorded run. The `Engine bar` workflow runs SF1
+and SF10 weekly and on demand; it is not part of pull-request CI except when
+the harness changes. `engine_bar_sf` in the kako test suite runs the same SQL
+at the tiny scale in process.
 
 `bash scripts/engine-bar/slt/run.sh both <dir>` is the sqllogictest corpus
 under `scripts/engine-bar/slt/`. Each query is a kako job (`COPY (SELECT …)`

@@ -50,7 +50,12 @@ jobs:
         run: bash scripts/ci-cgroup-delegate.sh bash scripts/engine-bar/sf/run.sh "${{ matrix.scale }}" "engine-bar-sf${{ matrix.scale }}"
       - name: Report
         if: always()
-        run: python3 scripts/engine-bar/sf/report.py "engine-bar-sf${{ matrix.scale }}" | tee -a "$GITHUB_STEP_SUMMARY"
+        run: |
+          prev="${RUNNER_TEMP}/engine-bar-prev-sf${{ matrix.scale }}"
+          mkdir -p "$prev"
+          cp "docs/engine-bar/sf${{ matrix.scale }}-runs.jsonl" "$prev/runs.jsonl"
+          cp "docs/engine-bar/sf${{ matrix.scale }}-host.json" "$prev/host.json"
+          python3 scripts/engine-bar/sf/report.py --previous "$prev" "engine-bar-sf${{ matrix.scale }}" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
