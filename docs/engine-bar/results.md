@@ -13,27 +13,31 @@ is in `sf1-host.json` and `sf10-host.json`.
 - Queries: the four join and aggregate queries in `queries/` (TPC-H q1, q3,
   q6 style and a TPC-DS store-sales style join), each with a full `ORDER BY`
   so results compare row by row.
-- Execution: every query runs once per engine through `kako run` under
+- Execution: every query runs three times per engine through `kako run` under
   kekkai `linux_native`, with the same limits: a 4 GiB cgroup memory cap and a
   30 minute wall clock per job. Each engine runs one worker with its internal
   256 MiB memory cap.
-- Wall clock is the receipt `duration_ms`; peak memory is the receipt
-  `memory_peak_bytes`. Ratio is mizuchi / DuckDB.
+- Wall clock is the median receipt `duration_ms` of the three trials; peak
+  memory is the maximum receipt `memory_peak_bytes`. Spread is the min-max of
+  the three wall clocks. Ratio is mizuchi / DuckDB using those medians. A
+  query that fails any trial is incomplete.
 - Correctness compares cells exactly, numbers with relative tolerance 1e-6.
-- Host: hosted CI runner, 4 CPUs, 15.6 GiB. One run per query; the numbers
-  are a single sample, not a median.
+- Host: hosted CI runner, 4 CPUs, 15.6 GiB. Three trials per query. The
+  weekly job summary also prints the delta against the previous recorded
+  run (geometric mean, worst query, and each bar).
 
 Reproduce with `bash scripts/engine-bar/sf/run.sh <1|10> <dir>` and
-`python3 scripts/engine-bar/sf/report.py <dir>`. The sqllogictest corpus is
-`bash scripts/engine-bar/slt/run.sh both <dir>`. The `Engine bar` workflow
-reruns both scales and the corpus weekly and on demand and writes the report
-to the job summary.
+`python3 scripts/engine-bar/sf/report.py [--previous <prev-dir>] <dir>`.
+The sqllogictest corpus is `bash scripts/engine-bar/slt/run.sh both <dir>`.
+The `Engine bar` workflow reruns both scales and the corpus weekly and on
+demand and writes the report, including the delta against this snapshot, to
+the job summary.
 
 ## Results
 
 ### Scale factor 1
 
-Host: 4 CPUs, 15.6 GiB. Engines: duckdb 1.5.6, mizuchi 0.1.0.
+Host: 4 CPUs, 15.6 GiB. Engines: duckdb 1.5.6, mizuchi 0.1.0. Trials per query: 1 (last recorded snapshot; spread is n/a until a three-trial run is recorded). Wall clock is the median; peak memory is the maximum; spread is min-max.
 
 | query | duckdb ms | mizuchi ms | ratio | duckdb peak MiB | mizuchi peak MiB | results match |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
@@ -55,7 +59,7 @@ Geometric mean ratio (mizuchi / duckdb): 4.65 (bar 2.0); worst query: 6.24 (bar 
 
 ### Scale factor 10
 
-Host: 4 CPUs, 15.6 GiB. Engines: duckdb 1.5.6, mizuchi 0.1.0.
+Host: 4 CPUs, 15.6 GiB. Engines: duckdb 1.5.6, mizuchi 0.1.0. Trials per query: 1 (last recorded snapshot; spread is n/a until a three-trial run is recorded). Wall clock is the median; peak memory is the maximum; spread is min-max.
 
 | query | duckdb ms | mizuchi ms | ratio | duckdb peak MiB | mizuchi peak MiB | results match |
 | --- | ---: | ---: | ---: | ---: | ---: | --- |
@@ -94,8 +98,9 @@ Every query both engines completed returned the same rows.
 
 Single runs vary: a rerun on the same runner class measured geometric means
 of 2.86 (SF1, worst 5.03) and 15.37 (SF10, worst 18.30), with the same
-verdict on every bar. Treat the ratios as an order of magnitude, not a
-precise figure.
+verdict on every bar. The tables above are that last recorded n=1 snapshot.
+Later runs report the median and min-max spread of three trials so the noise
+is visible in the table.
 
 ### sqllogictest
 

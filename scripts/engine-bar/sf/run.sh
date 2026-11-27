@@ -4,10 +4,11 @@
 # mizuchi with the same sandbox limits, and write the measurements.
 #
 # Usage: run.sh <tiny|1|10> <results-dir>
-# Writes <results-dir>/runs.jsonl (one object per query and engine),
-# <results-dir>/host.json, and each engine's result CSV. Needs kekkai
-# linux_native and jq; exits 2 when that backend is absent. Summarize with
-# report.py.
+# Writes <results-dir>/runs.jsonl (one object per query, engine, and trial),
+# <results-dir>/host.json, and each engine's result CSV from the last
+# successful trial. Each query runs three times per engine; report.py takes
+# the median wall clock, the maximum peak memory, and the min-max spread.
+# Needs kekkai linux_native and jq; exits 2 when that backend is absent.
 set -euo pipefail
 
 scale="${1:?usage: run.sh <tiny|1|10> <results-dir>}"
@@ -78,20 +79,25 @@ for sql_file in "$here"/queries/*.sql; do
       --argjson timeout_ms "$timeout_ms" --argjson memory_bytes "$memory_bytes" \
       '{id: $id, engine: $engine, sql: $sql, inputs: $inputs, outputs: ["result.csv"],
         timeout_ms: $timeout_ms, memory_bytes: $memory_bytes}' >"$work/$id.json"
-    echo "engine-bar: $id" >&2
-    out="$work/out-$id"
-    if "$kako" run "$work/$id.json" --output "$out" 2>"$work/$id.err"; then
-      cp "$out/result.csv" "$results/$id.csv"
-      jq -c --arg scale "$scale" --arg query "$query" --arg engine "$engine" \
-        '{scale: $scale, query: $query, engine: $engine, status: "ok",
-          engine_version, duration_ms, cpu_usec, memory_peak_bytes}' \
-        "$out/receipt.json" >>"$results/runs.jsonl"
-    else
-      jq -nc --arg scale "$scale" --arg query "$query" --arg engine "$engine" \
-        --arg error "$(tail -c 400 "$work/$id.err")" \
-        '{scale: $scale, query: $query, engine: $engine, status: "failed", error: $error}' \
-        >>"$results/runs.jsonl"
-    fi
-    rm -rf "$out"
+    for trial in 1 2 3; do
+      echo "engine-bar: $id trial $trial/3" >&2
+      out="$work/out-$id-$trial"
+      err="$work/$id-$trial.err"
+      if "$kako" run "$work/$id.json" --output "$out" 2>"$err"; then
+        cp "$out/result.csv" "$results/$id.csv"
+        jq -c --arg scale "$scale" --arg query "$query" --arg engine "$engine" \
+          --argjson trial "$trial" \
+          '{scale: $scale, query: $query, engine: $engine, trial: $trial, status: "ok",
+            engine_version, duration_ms, cpu_usec, memory_peak_bytes}' \
+          "$out/receipt.json" >>"$results/runs.jsonl"
+      else
+        jq -nc --arg scale "$scale" --arg query "$query" --arg engine "$engine" \
+          --argjson trial "$trial" \
+          --arg error "$(tail -c 400 "$err")" \
+          '{scale: $scale, query: $query, engine: $engine, trial: $trial, status: "failed", error: $error}' \
+          >>"$results/runs.jsonl"
+      fi
+      rm -rf "$out"
+    done
   done
 done

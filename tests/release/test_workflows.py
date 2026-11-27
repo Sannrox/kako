@@ -228,6 +228,20 @@ class EngineBar(unittest.TestCase):
         self.assertIn("both", runs(run))
         self.assertIn("scripts/engine-bar/slt/run.sh", runs(run))
 
+    def test_scale_jobs_compare_the_new_run_to_the_committed_snapshot(self):
+        report = next(
+            step
+            for step in self.jobs["engine-bar"]["steps"]
+            if "scripts/engine-bar/sf/report.py" in runs(step)
+        )
+        self.assertEqual(report.get("if"), "always()")
+        self.assertIn("--previous", runs(report))
+        self.assertIn("docs/engine-bar/sf${{ matrix.scale }}-runs.jsonl", runs(report))
+        self.assertIn("docs/engine-bar/sf${{ matrix.scale }}-host.json", runs(report))
+
+    def test_does_not_write_the_repository(self):
+        self.assertEqual(self.wf["permissions"], {"contents": "read"})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,1 +1,1 @@
-"""Tests for the engine-bar sqllogictest harness."""
+"""Tests for scripts/engine-bar/."""
