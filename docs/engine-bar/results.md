@@ -24,9 +24,10 @@ is in `sf1-host.json` and `sf10-host.json`.
   are a single sample, not a median.
 
 Reproduce with `bash scripts/engine-bar/sf/run.sh <1|10> <dir>` and
-`python3 scripts/engine-bar/sf/report.py <dir>`. The `Engine bar` workflow
-reruns both scales weekly and on demand and writes the report to the job
-summary.
+`python3 scripts/engine-bar/sf/report.py <dir>`. The sqllogictest corpus is
+`bash scripts/engine-bar/slt/run.sh both <dir>`. The `Engine bar` workflow
+reruns both scales and the corpus weekly and on demand and writes the report
+to the job summary.
 
 ## Results
 
@@ -95,6 +96,11 @@ Single runs vary: a rerun on the same runner class measured geometric means
 of 2.86 (SF1, worst 5.03) and 15.37 (SF10, worst 18.30), with the same
 verdict on every bar. Treat the ratios as an order of magnitude, not a
 precise figure.
+
+### sqllogictest
+
+Not in this snapshot. The weekly workflow now runs
+`scripts/engine-bar/slt/run.sh both` and records pass / fail / unsupported.
 
 ## Verdict
 
