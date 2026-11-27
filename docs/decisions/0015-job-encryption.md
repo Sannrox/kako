@@ -36,7 +36,7 @@ worker must not see key material through its environment or the scratch tree.
 - Mizuchi parquet modular encryption is available on the bumped pin.
   Current kako SQL outputs are CSV, so the runner envelope is the
   encryption that lands on disk.
-- `sekai-keys` is a git pin until it is on crates.io.
+- The key-provider contract is `envelope-keys` from crates.io.
 
 ## Rejected alternatives
 

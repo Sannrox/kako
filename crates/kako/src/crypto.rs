@@ -15,7 +15,7 @@ use rand::RngCore;
 
 use kako_core::{Failure, Job, JobKeyClaim};
 
-pub use sekai_keys::{
+pub use envelope_keys::{
     Dek, KeyError, KeyId, KeyProvider, KeyPurpose, MemoryKeyProvider, RuntimeProfile, TenantId,
     UnwrapGrant, WrappedDek,
 };
@@ -255,5 +255,43 @@ mod tests {
             matches!(err, Failure::Runner(ref msg) if msg.contains("kek_id")),
             "{err}"
         );
+    }
+
+    /// Envelopes written by sekai-keys 1.0.0 unwrap through kako's claim path.
+    #[test]
+    fn unwrap_job_dek_reads_pre_switch_envelope() {
+        let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/sekai-keys-1.0.0");
+        let dir = tempfile::tempdir().unwrap();
+        let kek = dir
+            .path()
+            .join(format!("provider-{}.kek", std::process::id()));
+        let hex = fs::read_to_string(src.join("provider.kek.hex")).unwrap();
+        let hex = hex.trim();
+        let kek_bytes: Vec<u8> = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("kek hex"))
+            .collect();
+        fs::write(&kek, kek_bytes).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&kek, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let provider: std::sync::Arc<dyn KeyProvider + Send + Sync> = std::sync::Arc::new(
+            envelope_keys::FileKeyProvider::open(&kek, RuntimeProfile::Development).unwrap(),
+        );
+        let json = fs::read_to_string(src.join("wrapped-dek.json")).unwrap();
+        let wrapped: WrappedDek = serde_json::from_str(&json).unwrap();
+        let claim = JobKeyClaim {
+            wrapped_dek: json,
+            dek_id: wrapped.dek_id.as_str().to_string(),
+            kek_id: wrapped.kek_id.as_str().to_string(),
+        };
+        let mut job = sample_job(claim.clone());
+        job.tenant_id = "tenant-a".into();
+        let dek = unwrap_job_dek(&provider, &job, &claim).unwrap();
+        let expected: [u8; 32] = std::array::from_fn(|i| i as u8);
+        assert_eq!(dek.as_bytes(), &expected);
     }
 }

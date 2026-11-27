@@ -38,8 +38,33 @@ mod tests {
             "kako-core must not depend on the Sekai adapter:\n{toml}"
         );
         assert!(
-            !toml.contains("sekai-keys"),
-            "kako-core must not depend on sekai-keys:\n{toml}"
+            !toml.contains("sekai-keys") && !toml.contains("envelope-keys"),
+            "kako-core must not depend on the key-provider contract:\n{toml}"
+        );
+    }
+
+    #[test]
+    fn kako_depends_on_envelope_keys_not_sekai_keys() {
+        let kako = crate_toml("kako");
+        assert!(
+            kako.contains("envelope-keys") && !kako.contains("sekai-keys"),
+            "kako must depend on envelope-keys, not sekai-keys:\n{kako}"
+        );
+        let workspace = fs::read_to_string(workspace_root().join("Cargo.toml")).unwrap();
+        assert!(
+            workspace.contains("envelope-keys") && !workspace.contains("sekai-keys"),
+            "workspace must depend on envelope-keys, not sekai-keys:\n{workspace}"
+        );
+        let lock = fs::read_to_string(workspace_root().join("Cargo.lock")).unwrap();
+        let kako_pkg = lock
+            .split("[[package]]")
+            .find(|pkg| {
+                pkg.trim_start().starts_with("name = \"kako\"") && !pkg.contains("source =")
+            })
+            .expect("kako package in Cargo.lock");
+        assert!(
+            kako_pkg.contains("envelope-keys") && !kako_pkg.contains("sekai-keys"),
+            "kako lock entry must name envelope-keys, not sekai-keys:\n{kako_pkg}"
         );
     }
 

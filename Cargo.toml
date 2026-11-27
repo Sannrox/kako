@@ -34,8 +34,7 @@ duckdb = { version = "=1.10506.0", default-features = false, features = ["bundle
 # so Cargo.lock holds the verified tag commit and every build uses --locked.
 kekkai = { git = "https://github.com/Sannrox/kekkai", tag = "v0.2.3", default-features = false, features = ["guest"] }
 mizuchi = { git = "https://github.com/Sannrox/mizuchi", tag = "v0.1.0", default-features = false }
-# Git pin until sekai-keys is on crates.io.
-sekai-keys = { git = "https://github.com/Sannrox/sekai-chisei.git", rev = "1b2e12789a2b360759a087252367cf4bc633caf0" }
+envelope-keys = "1"
 aes-gcm = "0.10"
 rand = { version = "0.8", features = ["std"] }
 serde = { version = "1", default-features = false, features = ["std", "derive"] }
